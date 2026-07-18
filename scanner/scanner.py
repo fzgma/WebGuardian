@@ -1,16 +1,11 @@
 import requests
-from urllib.parse import urlparse
 from datetime import datetime
-from typing import Dict, Any, Tuple, List
+from typing import Any, Dict, List, Tuple
+from urllib.parse import urlparse
 
+from .net import http_request, make_session, normalize_url, validate_input_url
 from .options import ScanOptions
-
-
-# 统一 HTTP 配置
-DEFAULT_TIMEOUT = 5
-DEFAULT_HEADERS = {
-    "User-Agent": "WebGuardian/1.0 (+Security Scanner)"
-}
+from .page_scan import scan_pages
 SECURITY_HEADERS = [
     "Content-Security-Policy",
     "Strict-Transport-Security",
@@ -21,79 +16,6 @@ SECURITY_HEADERS = [
 ]
 SENSITIVE_PATHS = ["/admin", "/backup", "/test"]
 COMMON_PORTS = [80, 443]
-
-
-def _make_session() -> requests.Session:
-    """
-    创建统一 Session,复用 TCP 连接，提升稳定性和性能。
-    """
-    session = requests.Session()
-    session.headers.update(DEFAULT_HEADERS)
-    return session
-
-
-def http_request(
-    session: requests.Session,
-    method: str,
-    url: str,
-    **kwargs
-) -> requests.Response:
-    """
-    统一 HTTP 请求入口，集中处理超时、重定向等公共参数。
-    """
-    timeout = kwargs.pop("timeout", DEFAULT_TIMEOUT)
-    allow_redirects = kwargs.pop("allow_redirects", True)
-    return session.request(
-        method=method,
-        url=url,
-        timeout=timeout,
-        allow_redirects=allow_redirects,
-        **kwargs
-    )
-
-
-def validate_input_url(raw_url: str) -> Tuple[bool, str]:
-    """
-    基础输入校验：
-    1. 不能为空
-    2. 去掉两端空白
-    3. 协议可省略，但 host 必须可解析
-    """
-    if not raw_url or not raw_url.strip():
-        return False, "URL 不能为空"
-
-    candidate = raw_url.strip()
-
-    # 若无协议，先补一个用于解析
-    if not candidate.startswith(("http://", "https://")):
-        candidate = "https://" + candidate
-
-    parsed = urlparse(candidate)
-    if not parsed.netloc:
-        return False, "URL 格式不正确，请输入类似 example.com 或 https://example.com"
-
-    return True, ""
-
-
-def normalize_url(raw_url: str, session: requests.Session) -> str:
-    """
-    URL 规范化：
-    - 用户已写协议：直接返回
-    - 未写协议：优先 https,失败回退 http
-    """
-    raw_url = raw_url.strip()
-
-    if raw_url.startswith(("http://", "https://")):
-        return raw_url
-
-    https_url = "https://" + raw_url
-    http_url = "http://" + raw_url
-
-    try:
-        http_request(session, "GET", https_url)
-        return https_url
-    except Exception:
-        return http_url
 
 
 def check_https(url: str) -> bool:
@@ -216,7 +138,7 @@ def scan(url: str, progress_callback=None, options: Dict[str, Any] | ScanOptions
         if progress_callback:
             progress_callback(p, text)
 
-    session = _make_session()
+    session = make_session()
     errors: List[str] = []
 
     ok, msg = validate_input_url(url)
@@ -329,10 +251,38 @@ def scan(url: str, progress_callback=None, options: Dict[str, Any] | ScanOptions
     else:
         result["open_ports"] = None
 
+    if scan_options.check_page_scan:
+        update_progress(70, "正在执行页面级安全检查")
+        result["page_scan"] = scan_pages(
+            session,
+            normalized_url,
+            scan_options,
+            max_pages=scan_options.page_scan_max_pages,
+            max_depth=scan_options.page_scan_max_depth,
+            progress_callback=progress_callback,
+        )
+    else:
+        result["page_scan"] = None
+
     # 7. 评分
     score, level = calculate_score(result, scan_options)
     result["score"] = score
     result["level"] = level
+    if result.get("page_scan"):
+        page_scan = result["page_scan"]
+        result["page_scan_summary"] = {
+            "enabled": True,
+            "pages_scanned": page_scan.get("pages_scanned", 0),
+            "finding_count": page_scan.get("finding_count", 0),
+            "highest_risk": page_scan.get("highest_risk", "低"),
+        }
+    else:
+        result["page_scan_summary"] = {
+            "enabled": False,
+            "pages_scanned": 0,
+            "finding_count": 0,
+            "highest_risk": "低",
+        }
 
     result["errors"] = errors
     update_progress(100, "检测完成")
