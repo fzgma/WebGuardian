@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Tuple
 from urllib.parse import urlparse
 
@@ -8,11 +6,12 @@ import requests
 
 DEFAULT_TIMEOUT = 5
 DEFAULT_HEADERS = {
-    "User-Agent": "WebGuardian/1.0 (+Security Scanner)"
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 }
 
 
 def make_session() -> requests.Session:
+    """创建带默认请求头的会话。"""
     session = requests.Session()
     session.headers.update(DEFAULT_HEADERS)
     return session
@@ -24,6 +23,7 @@ def http_request(
     url: str,
     **kwargs,
 ) -> requests.Response:
+    """发送 HTTP 请求。"""
     timeout = kwargs.pop("timeout", DEFAULT_TIMEOUT)
     allow_redirects = kwargs.pop("allow_redirects", True)
     return session.request(
@@ -36,6 +36,7 @@ def http_request(
 
 
 def validate_input_url(raw_url: str) -> Tuple[bool, str]:
+    """校验输入的 URL。"""
     if not raw_url or not raw_url.strip():
         return False, "URL 不能为空"
 
@@ -51,6 +52,7 @@ def validate_input_url(raw_url: str) -> Tuple[bool, str]:
 
 
 def normalize_url(raw_url: str, session: requests.Session) -> str:
+    """补全并选择可访问的 URL 协议。"""
     raw_url = raw_url.strip()
 
     if raw_url.startswith(("http://", "https://")):
