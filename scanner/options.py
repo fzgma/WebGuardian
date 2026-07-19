@@ -4,12 +4,12 @@ from typing import Any, Dict
 
 @dataclass(frozen=True)
 class ScanOptions:
+    """保存一次扫描的开关配置。"""
     check_https: bool = True
     check_ssl: bool = True
     check_security_headers: bool = True
     check_trace: bool = True
     check_sensitive_paths: bool = True
-    check_ports: bool = True
     check_info_leak: bool = True
     check_page_scan: bool = False
     check_page_mixed_content: bool = False
@@ -23,6 +23,7 @@ class ScanOptions:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any] | None) -> "ScanOptions":
+        """从字典构建扫描配置。"""
         if not data:
             return cls()
 
@@ -32,7 +33,6 @@ class ScanOptions:
             check_security_headers=bool(data.get("check_security_headers", True)),
             check_trace=bool(data.get("check_trace", True)),
             check_sensitive_paths=bool(data.get("check_sensitive_paths", True)),
-            check_ports=bool(data.get("check_ports", True)),
             check_info_leak=bool(data.get("check_info_leak", True)),
             check_page_scan=bool(data.get("check_page_scan", False)),
             check_page_mixed_content=bool(data.get("check_page_mixed_content", False)),
@@ -46,34 +46,32 @@ class ScanOptions:
         )
 
     def to_dict(self) -> Dict[str, Any]:
+        """导出扫描配置。"""
         return asdict(self)
 
     def enabled_items(self) -> int:
+        """统计当前启用的检测项数量。"""
+        page_flags = (
+            self.check_page_mixed_content,
+            self.check_page_forms,
+            self.check_page_cookie_flags,
+            self.check_page_redirects,
+            self.check_page_headers,
+            self.check_page_exposed_info,
+        )
+
         count = sum(
-            1
-            for flag in (
+            (
                 self.check_https,
                 self.check_ssl,
                 self.check_security_headers,
                 self.check_trace,
                 self.check_sensitive_paths,
-                self.check_ports,
                 self.check_info_leak,
             )
-            if flag
         )
+
         if self.check_page_scan:
-            count += 1
-            count += sum(
-                1
-                for flag in (
-                    self.check_page_mixed_content,
-                    self.check_page_forms,
-                    self.check_page_cookie_flags,
-                    self.check_page_redirects,
-                    self.check_page_headers,
-                    self.check_page_exposed_info,
-                )
-                if flag
-            )
+            count += 1 + sum(page_flags)
+
         return count
