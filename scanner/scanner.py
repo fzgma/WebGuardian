@@ -1,12 +1,15 @@
-import requests
-from datetime import datetime
+from datetime import datetime, timezone
+import re
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
-import re
+
+import requests
 
 from .net import http_request, make_session, normalize_url, validate_input_url
 from .options import ScanOptions
 from .page_scan import scan_pages
+from .scan_progress import ScanProgress
+from .security_score import calculate_score
 
 SECURITY_HEADERS = [
     "Content-Security-Policy",
@@ -63,70 +66,18 @@ def check_ssl_via_requests(response: requests.Response) -> Tuple[bool, int]:
         if not not_after:
             return True, -1
 
-        expire_dt = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
-        days_left = (expire_dt - datetime.utcnow()).days
+        expire_dt = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+        days_left = (expire_dt - datetime.now(timezone.utc)).days
         return True, days_left
     except Exception:
         return False, -1
 
 
-def calculate_score(result: Dict[str, Any], options: ScanOptions) -> Tuple[int, str]:
-    """计算安全评分和等级。"""
-    score = 0
-    max_score = 0
-
-    if options.check_https:
-        max_score += 10
-        if result.get("https"):
-            score += 10
-
-    if options.check_ssl:
-        max_score += 20
-        if result.get("ssl_valid"):
-            score += 10
-
-        days_left = result.get("ssl_days_left", -1)
-        if isinstance(days_left, int) and days_left > 7:
-            score += 10
-
-    if options.check_security_headers:
-        max_score += 30
-        # 每个安全头按 5 分累计。
-        header_score = result.get("security_header_score", 0) or 0
-        score += header_score
-
-    if options.check_info_leak:
-        max_score += 20
-        info_leak = result.get("info_leak", {})
-        if info_leak.get("version_exposed") is False:
-            score += 10
-        if info_leak.get("framework_exposed") is False:
-            score += 10
-
-    if options.check_trace:
-        max_score += 10
-        if result.get("trace_enabled") is False:
-            score += 10
-
-    if options.check_sensitive_paths:
-        max_score += 10
-        if not result.get("sensitive_paths"):
-            score += 10
-
-    if max_score > 0:
-        score = round((score / max_score) * 100)
-
-    if score >= 85:
-        level = "A级"
-    elif score >= 70:
-        level = "B级"
-    else:
-        level = "C级"
-
-    return score, level
-
-
-def scan(url: str, progress_callback=None, options: Dict[str, Any] | ScanOptions | None = None) -> Dict[str, Any]:
+def scan(
+    url: str,
+    progress_callback=None,
+    options: Dict[str, Any] | ScanOptions | None = None,
+) -> Dict[str, Any]:
     """执行主站点安全扫描。"""
     scan_options = options if isinstance(options, ScanOptions) else ScanOptions.from_dict(options)
 
@@ -136,9 +87,7 @@ def scan(url: str, progress_callback=None, options: Dict[str, Any] | ScanOptions
             "error": "请至少启用一项检测后再开始扫描。",
         }
 
-    def update_progress(p: int, text: str):
-        if progress_callback:
-            progress_callback(p, text)
+    progress = ScanProgress(scan_options, len(SENSITIVE_PATHS), progress_callback)
 
     session = make_session()
     errors: List[str] = []
@@ -171,27 +120,30 @@ def scan(url: str, progress_callback=None, options: Dict[str, Any] | ScanOptions
     }
 
     # 1. 主请求
-    update_progress(10, "正在请求目标站点")
+    progress.update("正在请求目标站点")
     try:
         resp = http_request(session, "GET", normalized_url, stream=True)
     except Exception as e:
         return {"ok": False, "error": f"目标站点不可访问：{e}"}
 
+    progress.update("目标站点请求完成", 1)
+
     # 2. HTTPS / SSL
-    update_progress(25, "正在检测 HTTPS 与 SSL")
     result["https"] = check_https(resp.url)
     result["https_checked"] = scan_options.check_https
+    if scan_options.check_https:
+        progress.update("正在检测 HTTPS", 1)
 
     if scan_options.check_ssl:
         ssl_valid, ssl_days_left = check_ssl_via_requests(resp)
         result["ssl_valid"] = ssl_valid
         result["ssl_days_left"] = ssl_days_left
+        progress.update("正在检测 SSL 证书", 1)
     else:
         result["ssl_valid"] = None
         result["ssl_days_left"] = None
 
     # 3. 安全响应头 + 信息泄露
-    update_progress(45, "正在检测 HTTP 安全头与信息泄露")
     headers = resp.headers
     if scan_options.check_security_headers:
         missing = [h for h in SECURITY_HEADERS if h not in headers]
@@ -200,6 +152,8 @@ def scan(url: str, progress_callback=None, options: Dict[str, Any] | ScanOptions
     else:
         result["missing_security_headers"] = None
         result["security_header_score"] = None
+    if scan_options.check_security_headers:
+        progress.update("正在检测 HTTP 安全头", 1)
 
     if scan_options.check_info_leak:
         server = headers.get("Server", "")
@@ -218,9 +172,10 @@ def scan(url: str, progress_callback=None, options: Dict[str, Any] | ScanOptions
     else:
         result["info_leak"]["version_exposed"] = None
         result["info_leak"]["framework_exposed"] = None
+    if scan_options.check_info_leak:
+        progress.update("正在检测响应头暴露信息", 1)
 
     # 4. TRACE 检测
-    update_progress(60, "正在检测 TRACE 方法")
     if scan_options.check_trace:
         try:
             trace_resp = http_request(session, "TRACE", normalized_url, allow_redirects=False)
@@ -228,11 +183,11 @@ def scan(url: str, progress_callback=None, options: Dict[str, Any] | ScanOptions
         except Exception as e:
             result["trace_enabled"] = None
             errors.append(f"TRACE 检测异常：{e}")
+        progress.update("正在检测 TRACE 方法", 1)
     else:
         result["trace_enabled"] = None
 
     # 5. 敏感路径检测
-    update_progress(75, "正在检测敏感路径")
     if scan_options.check_sensitive_paths:
         found_paths = []
         base = f"{parsed.scheme}://{parsed.netloc}"
@@ -244,27 +199,26 @@ def scan(url: str, progress_callback=None, options: Dict[str, Any] | ScanOptions
                     found_paths.append(p)
             except Exception as e:
                 errors.append(f"敏感路径 {p} 检测异常：{e}")
+            progress.update(f"正在检测敏感路径：{p}", 1)
         result["sensitive_paths"] = found_paths
     else:
         result["sensitive_paths"] = None
 
-    # 页面级扫描放在主站检测之后执行。
-    update_progress(80, "正在整理检测结果")
-
     if scan_options.check_page_scan:
-        update_progress(70, "正在执行页面级安全检查")
         result["page_scan"] = scan_pages(
             session,
             normalized_url,
             scan_options,
             max_pages=scan_options.page_scan_max_pages,
             max_depth=scan_options.page_scan_max_depth,
-            progress_callback=progress_callback,
+            progress_callback=progress.page_callback(scan_options),
         )
+        progress.complete_page_scan(scan_options)
     else:
         result["page_scan"] = None
 
     # 7. 评分
+    progress.update("正在整理检测结果")
     score, level = calculate_score(result, scan_options)
     result["score"] = score
     result["level"] = level
@@ -274,16 +228,16 @@ def scan(url: str, progress_callback=None, options: Dict[str, Any] | ScanOptions
             "enabled": True,
             "pages_scanned": page_scan.get("pages_scanned", 0),
             "finding_count": page_scan.get("finding_count", 0),
-            "highest_risk": page_scan.get("highest_risk", "低"),
+            "highest_risk": page_scan.get("highest_risk", "无"),
         }
     else:
         result["page_scan_summary"] = {
             "enabled": False,
             "pages_scanned": 0,
             "finding_count": 0,
-            "highest_risk": "低",
+            "highest_risk": "无",
         }
 
     result["errors"] = errors
-    update_progress(100, "检测完成")
+    progress.update("检测完成", 1)
     return result
