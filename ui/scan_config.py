@@ -27,6 +27,7 @@ _PAGE_OPTION_KEYS = (
 _SCAN_OPTION_KEYS = _BASIC_OPTION_KEYS + _PAGE_OPTION_KEYS
 
 
+@st.fragment
 def render_scan_config() -> ScanOptions:
     """渲染扫描配置并返回当前选项。"""
     st.subheader("扫描配置")
@@ -41,6 +42,9 @@ def render_scan_config() -> ScanOptions:
     )
 
     profile = st.session_state["scan_profile"]
+    if profile != "自定义模式":
+        _apply_profile(profile)
+
     defaults = _preset_options(profile if profile != "自定义模式" else "标准模式")
 
     (
@@ -54,7 +58,7 @@ def render_scan_config() -> ScanOptions:
     _render_page_scan_options(defaults)
 
     if profile == "自定义模式":
-        st.caption("当前为自定义模式，修改下方选项后会自动保持自定义。")
+        st.caption("当前为自定义模式，可以手动调整下方选项。")
 
     return ScanOptions.from_dict({key: st.session_state[key] for key in _SCAN_OPTION_KEYS})
 
