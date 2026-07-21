@@ -1,3 +1,4 @@
+import ipaddress
 from typing import Any
 
 import streamlit as st
@@ -24,6 +25,25 @@ def render_scan_result(result: dict[str, Any]) -> None:
     st.subheader("基础信息")
     st.write("检测地址：", result["url"])
     st.write("主机名称：", result["host"])
+    resolved_ips = result.get("resolved_ips", [])
+    if resolved_ips:
+        # 摘要只保留一个 IPv4 和一个 IPv6。
+        ipv4, ipv6 = _split_resolved_ips(resolved_ips)
+        summary_ips = [ip for ip in (ipv4, ipv6) if ip]
+        st.write("解析到的 IP：", "，".join(summary_ips))
+        with st.expander("查看完整 IP 列表"):
+            ipv4_list, ipv6_list = _group_resolved_ips(resolved_ips)
+            if ipv4_list and ipv6_list:
+                col_v4, col_v6 = st.columns(2)
+                with col_v4:
+                    st.caption("IPv4")
+                    st.table([{"IP": ip} for ip in ipv4_list])
+                with col_v6:
+                    st.caption("IPv6")
+                    st.table([{"IP": ip} for ip in ipv6_list])
+            else:
+                # 只有一种地址族时，保持单栏列表。
+                st.table([{"IP": ip} for ip in resolved_ips])
 
     st.divider()
     st.subheader("TLS/SSL 检测")
@@ -104,6 +124,40 @@ def _render_exposure_status(
         st.success(success)
     else:
         st.info(disabled)
+
+
+def _split_resolved_ips(resolved_ips: list[str]) -> tuple[str, str]:
+    """提取摘要用的 IPv4 和 IPv6 地址。"""
+    ipv4 = ""
+    ipv6 = ""
+    for ip in resolved_ips:
+        try:
+            parsed = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if parsed.version == 4 and not ipv4:
+            ipv4 = ip
+        elif parsed.version == 6 and not ipv6:
+            ipv6 = ip
+        if ipv4 and ipv6:
+            break
+    return ipv4, ipv6
+
+
+def _group_resolved_ips(resolved_ips: list[str]) -> tuple[list[str], list[str]]:
+    """按地址族整理解析结果。"""
+    ipv4_list: list[str] = []
+    ipv6_list: list[str] = []
+    for ip in resolved_ips:
+        try:
+            parsed = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if parsed.version == 4:
+            ipv4_list.append(ip)
+        else:
+            ipv6_list.append(ip)
+    return ipv4_list, ipv6_list
 
 
 def _render_page_scan(page_scan: dict[str, Any] | None) -> None:

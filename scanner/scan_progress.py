@@ -1,7 +1,9 @@
 """扫描进度计算。"""
 
 from collections.abc import Callable
+from threading import Event
 
+from .control import check_stop
 from .options import ScanOptions
 
 
@@ -13,14 +15,17 @@ class ScanProgress:
         options: ScanOptions,
         sensitive_path_count: int,
         callback: Callable[[int, str], None] | None,
+        stop_event: Event | None = None,
     ) -> None:
         """初始化扫描进度。"""
         self.callback = callback
+        self.stop_event = stop_event
         self.completed_work = 0
         self.total_work = _total_work(options, sensitive_path_count)
 
     def update(self, text: str, work_units: int = 0) -> None:
         """完成工作并汇报进度。"""
+        check_stop(self.stop_event)
         self.completed_work += work_units
         if self.callback:
             percent = 100 if self.completed_work >= self.total_work else round(
@@ -37,6 +42,7 @@ class ScanProgress:
             """映射页面扫描的局部进度。"""
             if self.callback:
                 completed = page_start + round(page_work * percent / 100)
+                # 页面扫描进度只推进到 99%，避免主流程结束前看起来已完成。
                 overall = min(99, round(completed / self.total_work * 100))
                 self.callback(overall, text)
 

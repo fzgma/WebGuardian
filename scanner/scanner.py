@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
 import re
+import socket
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
 import requests
 
+from .control import check_stop
 from .net import http_request, make_session, normalize_url, validate_input_url
 from .options import ScanOptions
 from .page_scan import scan_pages
@@ -37,8 +39,15 @@ SENSITIVE_PATHS = [
     "/console",
     "/docs"
 ]
-VERSION_HINT_RE = re.compile(r"(?i)(?:\b(?:apache|nginx|iis|openresty|tomcat|php|asp\.net|express|django|spring|laravel|rails|koa|fastapi|flask)\b.*\b\d+(?:\.\d+){0,2}\b|\b\d+(?:\.\d+){1,3}\b.*\b(?:apache|nginx|iis|openresty|tomcat|php|asp\.net|express|django|spring|laravel|rails|koa|fastapi|flask)\b)")
-# version_hint_re 用于检测服务器响应头或页面源码中是否暴露了版本信息，匹配常见的 Web 服务器和框架名称及其版本号。
+SERVER_NAME_RE = re.compile(r"(?i)\b(?:apache|nginx|iis|openresty|tomcat)\b")  # 匹配常见的服务器名称。
+FRAMEWORK_NAME_RE = re.compile(r"(?i)\b(?:php|asp\.net|express|django|spring|laravel|rails|koa|fastapi|flask)\b")  # 匹配常见的框架名称。
+VERSION_NUMBER_RE = re.compile(r"\b\d+(?:\.\d+){1,3}\b")  # 匹配常见的版本号格式。
+
+
+def field_exposes_version(value: str, name_re: re.Pattern[str]) -> bool:
+    """判断文本是否同时包含技术栈名称和版本号。"""
+    return bool(value and name_re.search(value) and VERSION_NUMBER_RE.search(value))
+
 
 def check_https(url: str) -> bool:
     """判断最终地址是否走 HTTPS。"""
@@ -73,10 +82,29 @@ def check_ssl_via_requests(response: requests.Response) -> Tuple[bool, int]:
         return False, -1
 
 
+def resolve_host_ips(host: str) -> List[str]:
+    """解析主机名对应的 IP 地址。"""
+    if not host:
+        return []
+
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return []
+
+    ips = []
+    for info in infos:
+        address = info[4][0]
+        if address not in ips:
+            ips.append(address)
+    return ips
+
+
 def scan(
     url: str,
     progress_callback=None,
     options: Dict[str, Any] | ScanOptions | None = None,
+    stop_event=None,
 ) -> Dict[str, Any]:
     """执行主站点安全扫描。"""
     scan_options = options if isinstance(options, ScanOptions) else ScanOptions.from_dict(options)
@@ -87,7 +115,7 @@ def scan(
             "error": "请至少启用一项检测后再开始扫描。",
         }
 
-    progress = ScanProgress(scan_options, len(SENSITIVE_PATHS), progress_callback)
+    progress = ScanProgress(scan_options, len(SENSITIVE_PATHS), progress_callback, stop_event=stop_event)
 
     session = make_session()
     errors: List[str] = []
@@ -96,15 +124,18 @@ def scan(
     if not ok:
         return {"ok": False, "error": msg}
 
+    check_stop(stop_event)
     # 先尝试 HTTPS，再回退到 HTTP。
     normalized_url = normalize_url(url, session)
     parsed = urlparse(normalized_url)
     host = parsed.hostname or ""
+    resolved_ips = resolve_host_ips(host)
 
     result: Dict[str, Any] = {
         "ok": True,
         "url": normalized_url,
         "host": host,
+        "resolved_ips": resolved_ips,
         "https": False,
         "ssl_valid": False,
         "ssl_days_left": -1,
@@ -122,13 +153,17 @@ def scan(
     # 1. 主请求
     progress.update("正在请求目标站点")
     try:
-        resp = http_request(session, "GET", normalized_url, stream=True)
+        resp = http_request(session, "GET", normalized_url, stream=True, raise_for_status=True)
+    except requests.HTTPError as e:
+        code = e.response.status_code if e.response is not None else "未知"
+        return {"ok": False, "error": f"目标站点返回异常状态码：{code}"}
     except Exception as e:
         return {"ok": False, "error": f"目标站点不可访问：{e}"}
 
     progress.update("目标站点请求完成", 1)
 
     # 2. HTTPS / SSL
+    check_stop(stop_event)
     result["https"] = check_https(resp.url)
     result["https_checked"] = scan_options.check_https
     if scan_options.check_https:
@@ -144,6 +179,7 @@ def scan(
         result["ssl_days_left"] = None
 
     # 3. 安全响应头 + 信息泄露
+    check_stop(stop_event)
     headers = resp.headers
     if scan_options.check_security_headers:
         missing = [h for h in SECURITY_HEADERS if h not in headers]
@@ -158,17 +194,14 @@ def scan(
     if scan_options.check_info_leak:
         server = headers.get("Server", "")
         x_powered_by = headers.get("X-Powered-By", "")
-        response_banner = " ".join(
-            part for part in (server, x_powered_by, resp.headers.get("X-AspNet-Version", "")) if part
+        aspnet_version = headers.get("X-AspNet-Version", "")
+        # 分字段判断
+        result["info_leak"]["version_exposed"] = bool(
+            field_exposes_version(server, SERVER_NAME_RE)
+            or field_exposes_version(x_powered_by, FRAMEWORK_NAME_RE)
+            or (aspnet_version and VERSION_NUMBER_RE.search(aspnet_version))
         )
-        result["info_leak"]["version_exposed"] = bool(VERSION_HINT_RE.search(response_banner))
-        result["info_leak"]["framework_exposed"] = bool(
-            x_powered_by
-            and (
-                VERSION_HINT_RE.search(x_powered_by)
-                or any(name in x_powered_by.lower() for name in ("express", "django", "spring", "laravel", "rails", "koa", "fastapi", "flask"))
-            )
-        )
+        result["info_leak"]["framework_exposed"] = bool(x_powered_by and FRAMEWORK_NAME_RE.search(x_powered_by))
     else:
         result["info_leak"]["version_exposed"] = None
         result["info_leak"]["framework_exposed"] = None
@@ -177,6 +210,7 @@ def scan(
 
     # 4. TRACE 检测
     if scan_options.check_trace:
+        check_stop(stop_event)
         try:
             trace_resp = http_request(session, "TRACE", normalized_url, allow_redirects=False)
             result["trace_enabled"] = trace_resp.status_code < 400
@@ -192,6 +226,7 @@ def scan(
         found_paths = []
         base = f"{parsed.scheme}://{parsed.netloc}"
         for p in SENSITIVE_PATHS:
+            check_stop(stop_event)
             test_url = base + p
             try:
                 r = http_request(session, "GET", test_url, allow_redirects=False)
@@ -205,6 +240,7 @@ def scan(
         result["sensitive_paths"] = None
 
     if scan_options.check_page_scan:
+        check_stop(stop_event)
         result["page_scan"] = scan_pages(
             session,
             normalized_url,
@@ -212,12 +248,14 @@ def scan(
             max_pages=scan_options.page_scan_max_pages,
             max_depth=scan_options.page_scan_max_depth,
             progress_callback=progress.page_callback(scan_options),
+            stop_event=stop_event,
         )
         progress.complete_page_scan(scan_options)
     else:
         result["page_scan"] = None
 
     # 7. 评分
+    check_stop(stop_event)
     progress.update("正在整理检测结果")
     score, level = calculate_score(result, scan_options)
     result["score"] = score
@@ -239,5 +277,6 @@ def scan(
         }
 
     result["errors"] = errors
+    check_stop(stop_event)
     progress.update("检测完成", 1)
     return result

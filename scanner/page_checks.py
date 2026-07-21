@@ -44,6 +44,25 @@ def is_same_origin(base_url: str, candidate_url: str) -> bool:
     return (base.scheme, base.netloc) == (candidate.scheme, candidate.netloc)
 
 
+def is_same_host(base_url: str, candidate_url: str) -> bool:
+    """判断两个地址是否属于同一个站点。"""
+    base = urlparse(base_url)
+    candidate = urlparse(candidate_url)
+    return bool(
+        base.hostname
+        and candidate.hostname
+        and _normalize_site_host(base.hostname) == _normalize_site_host(candidate.hostname)
+    )
+
+
+def _normalize_site_host(host: str) -> str:
+    """归一化常见的站点别名主机。"""
+    normalized = host.rstrip(".").lower()
+    if normalized.startswith("www."):
+        return normalized[4:]
+    return normalized
+
+
 def is_html(content_type: str) -> bool:
     """判断响应是否为 HTML 页面。"""
     lowered = content_type.lower()
@@ -70,10 +89,11 @@ def extract_redirect_chain(
 ) -> List[Dict[str, Any]]:
     """整理重定向链。"""
     chain: List[Dict[str, Any]] = []
-    previous_url = start_url
-    for hop in list(response.history) + [response]:
-        chain.append({"from": previous_url, "to": hop.url, "status_code": hop.status_code})
-        previous_url = hop.url
+    for hop in response.history:
+        source_url = getattr(getattr(hop, "request", None), "url", "") or start_url
+        location = hop.headers.get("Location", "")
+        target_url = urljoin(source_url, location) if location else hop.url
+        chain.append({"from": source_url, "to": target_url, "status_code": hop.status_code})
     return chain
 
 

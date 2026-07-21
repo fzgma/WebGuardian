@@ -1,4 +1,5 @@
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, fields, is_dataclass
 from typing import Any, Dict
 
 
@@ -22,10 +23,32 @@ class ScanOptions:
     page_scan_max_depth: int = 2
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any] | None) -> "ScanOptions":
+    def from_dict(cls, data: Any = None) -> "ScanOptions": #data是any类型，可能是字典、dataclass实例、其他对象等
         """从字典构建扫描配置。"""
         if not data:
             return cls()
+        
+        """
+        Streamlit 热更新后，session_state 里可能还留着旧版本的 ScanOptions 实例。
+        这时直接做 isinstance 判断不稳定，所以这里把“当前实例、旧实例、dataclass、字典
+        和其他带同名属性的对象”都收敛成统一的 Mapping，再按字段名读取，避免源码修改后
+        因对象类型漂移导致抛AttributeError异常。
+        """
+
+        if isinstance(data, cls):
+            return data
+
+        if hasattr(data, "to_dict"):
+            try:
+                data = data.to_dict()
+            except Exception:
+                data = data
+
+        if is_dataclass(data) and not isinstance(data, type):
+            data = asdict(data)
+
+        if not isinstance(data, Mapping):
+            data = {field.name: getattr(data, field.name, None) for field in fields(cls)}
 
         return cls(
             check_https=bool(data.get("check_https", True)),

@@ -1,11 +1,13 @@
 """页面级安全扫描编排。"""
 
 from collections import deque
+from threading import Event
 from typing import Callable, Deque, Dict, List, Set, Tuple
 from urllib.parse import urljoin
 
 import requests
 
+from .control import check_stop
 from .net import http_request
 from .options import ScanOptions
 from .page_checks import (
@@ -14,6 +16,7 @@ from .page_checks import (
     detect_exposed_info,
     extract_redirect_chain,
     is_html,
+    is_same_host,
     is_same_origin,
     resolve_links,
 )
@@ -28,6 +31,7 @@ def scan_pages(
     max_pages: int = 10,
     max_depth: int = 2,
     progress_callback: Callable[[int, str], None] | None = None,
+    stop_event: Event | None = None,
 ) -> Dict[str, object]:
     """执行同源页面级安全检查。"""
     results = PageScanResults()
@@ -56,16 +60,20 @@ def scan_pages(
     def complete_work(text: str) -> None:
         """完成当前页面的一项检查工作。"""
         nonlocal completed_work
+        check_stop(stop_event)
         completed_work += 1
+        # 页面级进度按整体工作量折算。
         update_progress(round(completed_work / (max_pages * page_work_units) * 100), text)
 
     def skip_remaining_checks(text: str) -> None:
         """跳过当前页面未执行的检查项。"""
+        # 跳过的检查也要补足工作量，避免进度卡住。
         for _ in range(page_work_units - completed_work % page_work_units):
             complete_work(text)
 
     update_progress(0, "正在准备页面级安全检查")
     while queue and pages_scanned < max_pages:
+        check_stop(stop_event)
         current_url, depth = queue.popleft()
         if current_url in visited or depth > max_depth:
             continue
@@ -89,12 +97,15 @@ def scan_pages(
         if options.check_page_redirects:
             complete_work(f"{page_label}：重定向链")
         if options.check_page_redirects and not is_same_origin(start_url, final_url):
+            # 跨源后不再继续解析当前页。
             skip_remaining_checks(f"{page_label}：跨源跳转，跳过检查")
             continue
         if not is_html(response.headers.get("Content-Type", "")):
+            # 只检查 HTML 页面。
             skip_remaining_checks(f"{page_label}：非 HTML 页面，跳过检查")
             continue
 
+        check_stop(stop_event)
         parser = PageParser()
         body = response.text or ""
         parser.feed(body)
@@ -130,10 +141,10 @@ def _check_redirects(response: requests.Response, current_url: str, start_url: s
         results.redirect_issues.append({"from": previous, "to": current, "status_code": hop.status_code})
         if previous.startswith("https://") and current.startswith("http://"):
             results.add_finding("高", "downgrade_redirect", previous, "页面重定向链中出现从 HTTPS 到 HTTP 的降级跳转。", "移除会降级协议的跳转，确保 HTTPS 请求不会被导向 HTTP 页面。")
-        if not is_same_origin(start_url, current):
+        if not is_same_host(start_url, current):
             results.add_finding("高", "cross_origin_redirect", previous, "页面发生了跨源跳转。", "检查跳转目标是否为可信域名，避免将用户导向第三方站点。")
 
-    if not is_same_origin(start_url, response.url):
+    if not is_same_host(start_url, response.url):
         results.add_finding("高", "cross_origin_redirect", current_url, "页面发生了跨源跳转。", "检查跳转目标是否为可信域名，避免将用户导向第三方站点。")
 
 
