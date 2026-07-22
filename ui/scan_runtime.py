@@ -8,9 +8,10 @@ from typing import Any
 
 import streamlit as st
 
-from scanner.control import ScanInterrupted
+from scanner.utils.control import ScanInterrupted
 from scanner.options import ScanOptions
 from scanner.scanner import scan
+from ui.scan_errors import ScanErrorInfo, explain_scan_error
 from ui.result_view import render_scan_result
 
 
@@ -23,6 +24,9 @@ class ScanRuntime:
     progress_text: str = "准备开始检测"
     result: dict[str, Any] | None = None
     error: str | None = None
+    error_hint: str | None = None
+    error_detail: str | None = None
+    error_kind: str | None = None
     stop_requested: bool = False
     stop_event: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
     thread: threading.Thread | None = field(default=None, repr=False, compare=False)
@@ -39,14 +43,7 @@ class ScanRuntime:
             if self.thread is not None and self.thread.is_alive():
                 return False
 
-            # 先把状态切到 running，再启动后台线程。
-            self.status = "running"
-            self.progress_percent = 0
-            self.progress_text = "正在准备检测"
-            self.result = None
-            self.error = None
-            self.stop_requested = False
-            self.stop_event = threading.Event()
+            self._reset_for_new_scan()
             self.thread = threading.Thread(
                 target=self._run,
                 args=(url, options, self.stop_event),
@@ -56,6 +53,34 @@ class ScanRuntime:
 
         thread.start()
         return True
+
+    def clear_previous_result(self) -> None:
+        """清空上一次扫描的结果展示。"""
+        with self.lock:
+            if self.thread is not None and self.thread.is_alive():
+                return
+            self.status = "idle"
+            self.progress_percent = 0
+            self.progress_text = "准备开始检测"
+            self.stop_requested = False
+            self._reset_display_state()
+
+    def _reset_for_new_scan(self) -> None:
+        """重置状态并准备启动新扫描。"""
+        self.status = "running"
+        self.progress_percent = 0
+        self.progress_text = "正在准备检测"
+        self.stop_requested = False
+        self.stop_event = threading.Event()
+        self._reset_display_state()
+
+    def _reset_display_state(self) -> None:
+        """清空结果和错误展示。"""
+        self.result = None
+        self.error = None
+        self.error_hint = None
+        self.error_detail = None
+        self.error_kind = None
 
     def request_stop(self) -> None:
         """请求停止当前扫描。"""
@@ -73,9 +98,21 @@ class ScanRuntime:
                 "progress_text": self.progress_text,
                 "result": self.result,
                 "error": self.error,
+                "error_hint": self.error_hint,
+                "error_detail": self.error_detail,
+                "error_kind": self.error_kind,
                 "stop_requested": self.stop_requested,
                 "running": self.thread is not None and self.thread.is_alive(),
             }
+
+    def _set_error(self, raw_error: str) -> ScanErrorInfo:
+        """把原始错误转换成友好的展示信息。"""
+        info = explain_scan_error(raw_error)
+        self.error = info.summary
+        self.error_hint = info.hint
+        self.error_detail = info.detail
+        self.error_kind = info.kind
+        return info
 
     def _run(self, url: str, options: ScanOptions, stop_event: threading.Event) -> None:
         """在线程中执行扫描并记录结果。"""
@@ -94,11 +131,14 @@ class ScanRuntime:
                 self.progress_text = "检测已停止"
                 self.result = None
                 self.error = None
+                self.error_hint = None
+                self.error_detail = None
+                self.error_kind = None
             return
         except Exception as exc:  # 捕获所有异常，避免线程崩溃
             with self.lock:
-                self.status = "error"
-                self.error = f"{type(exc).__name__}: {exc}"
+                info = self._set_error(f"{type(exc).__name__}: {exc}")
+                self.status = "invalid" if info.kind == "validation" else "error"
             return
 
         with self.lock:
@@ -108,8 +148,8 @@ class ScanRuntime:
                 self.progress_percent = 100
                 self.progress_text = "检测完成"
             else:
-                self.status = "error"
-                self.error = result.get("error", "检测失败")
+                info = self._set_error(result.get("error", "检测失败"))
+                self.status = "invalid" if info.kind == "validation" else "error"
 
     def on_progress(self, percent: int, text: str) -> None:
         """记录扫描进度。"""
@@ -160,6 +200,19 @@ def render_scan_runtime() -> None:
         st.warning("检测已停止。")
         return
 
+    if state["status"] == "invalid":
+        st.warning(state["error"])
+        error_hint = state.get("error_hint")
+        if error_hint:
+            st.info(error_hint)
+        return
+
     if state["status"] == "error":
         st.error(f"检测失败：{state['error']}")
+        if state.get("error_hint"):
+            st.info(state["error_hint"])
+        error_detail = state.get("error_detail")
+        if error_detail and error_detail not in {state.get("error"), state.get("error_hint")}:
+            with st.expander("查看详细错误"):
+                st.code(error_detail, wrap_lines=True)
         return

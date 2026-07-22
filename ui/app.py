@@ -1,5 +1,6 @@
 import streamlit as st
 
+from scanner.utils.net import validate_input_url
 from ui.scan_runtime import get_scan_runtime, render_scan_runtime, start_scan
 from ui.scan_config import render_scan_config, validate_scan_options
 
@@ -36,6 +37,11 @@ def run_app():
         elif not url.strip():
             st.warning("请先输入网站地址。")
         else:
+            runtime.clear_previous_result()
+            url_ok, url_error = validate_input_url(url)
+            if not url_ok:
+                st.warning(url_error)
+                return
             validation_error = validate_scan_options(options)
             if validation_error:
                 st.warning(validation_error)

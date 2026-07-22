@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Tuple
 
-from .options import ScanOptions
+from ..options import ScanOptions
 
 
 def calculate_score(result: Dict[str, Any], options: ScanOptions) -> Tuple[int, str]:

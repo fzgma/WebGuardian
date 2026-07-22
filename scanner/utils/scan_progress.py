@@ -4,7 +4,7 @@ from collections.abc import Callable
 from threading import Event
 
 from .control import check_stop
-from .options import ScanOptions
+from ..options import ScanOptions
 
 
 class ScanProgress:

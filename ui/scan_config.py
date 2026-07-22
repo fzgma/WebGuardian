@@ -131,6 +131,16 @@ def _initialize_state() -> None:
 
     defaults = _preset_options("标准模式")
     for key, value in (
+        ("check_https", defaults.check_https),
+        ("check_ssl", defaults.check_ssl),
+        ("check_security_headers", defaults.check_security_headers),
+        ("check_trace", defaults.check_trace),
+        ("check_sensitive_paths", defaults.check_sensitive_paths),
+        ("check_info_leak", defaults.check_info_leak),
+    ):
+        st.session_state.setdefault(key, value)
+
+    for key, value in (
         ("check_page_scan", defaults.check_page_scan),
         ("check_page_mixed_content", defaults.check_page_mixed_content),
         ("check_page_forms", defaults.check_page_forms),
@@ -169,32 +179,23 @@ def _render_basic_options(
     """渲染基础检测选项。"""
     col_a, col_b = st.columns(2)
     with col_a:
-        check_https = st.checkbox(
-            "HTTPS 检测", value=defaults.check_https, key="check_https", on_change=_mark_custom
-        )
-        check_ssl = st.checkbox(
-            "SSL 证书检测", value=defaults.check_ssl, key="check_ssl", on_change=_mark_custom
-        )
+        check_https = st.checkbox("HTTPS 检测", key="check_https", on_change=_mark_custom)
+        check_ssl = st.checkbox("SSL 证书检测", key="check_ssl", on_change=_mark_custom)
         check_security_headers = st.checkbox(
             "安全响应头检测",
-            value=defaults.check_security_headers,
             key="check_security_headers",
             on_change=_mark_custom,
         )
-        check_trace = st.checkbox(
-            "TRACE 方法检测", value=defaults.check_trace, key="check_trace", on_change=_mark_custom
-        )
+        check_trace = st.checkbox("TRACE 方法检测", key="check_trace", on_change=_mark_custom)
 
     with col_b:
         check_sensitive_paths = st.checkbox(
             "敏感路径检测",
-            value=defaults.check_sensitive_paths,
             key="check_sensitive_paths",
             on_change=_mark_custom,
         )
         check_info_leak = st.checkbox(
             "信息泄露检测",
-            value=defaults.check_info_leak,
             key="check_info_leak",
             on_change=_mark_custom,
         )
@@ -215,7 +216,6 @@ def _render_page_scan_options(defaults: ScanOptions) -> None:
     st.caption("仅对同源 HTML 页面做轻量抓取分析，检查常见的安全问题。")
     page_scan_enabled = st.checkbox(
         "启用页面级安全检查",
-        value=st.session_state["check_page_scan"],
         key="check_page_scan",
         on_change=_mark_custom,
         help="从首页开始，同源、限深、限页分析页面自身的安全暴露面。",
@@ -278,7 +278,6 @@ def _render_page_checkbox(label: str, key: str, help_text: str) -> None:
     """渲染页面级检查开关。"""
     st.checkbox(
         label,
-        value=st.session_state[key],
         key=key,
         on_change=_mark_custom,
         help=help_text,

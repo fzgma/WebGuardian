@@ -7,9 +7,9 @@ from urllib.parse import urljoin
 
 import requests
 
-from .control import check_stop
-from .net import http_request
-from .options import ScanOptions
+from ..options import ScanOptions
+from ..utils.control import check_stop
+from ..utils.net import http_request
 from .page_checks import (
     PageParser,
     cookie_flag_state,
