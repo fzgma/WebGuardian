@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 from collections import deque
 from html.parser import HTMLParser
+import re
 from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
@@ -13,6 +12,7 @@ from .options import ScanOptions
 
 class _PageParser(HTMLParser):
     def __init__(self) -> None:
+        """解析页面中的链接、资源和表单。"""
         super().__init__()
         self.links: List[str] = []
         self.resources: List[str] = []
@@ -20,6 +20,7 @@ class _PageParser(HTMLParser):
         self.text_chunks: List[str] = []
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        """收集页面标签里的目标属性。"""
         attr_map = {name.lower(): (value or "") for name, value in attrs}
         tag = tag.lower()
         if tag == "a" and attr_map.get("href"):
@@ -37,17 +38,20 @@ class _PageParser(HTMLParser):
             )
 
     def handle_data(self, data: str) -> None:
+        """保存页面文本片段。"""
         if data and data.strip():
             self.text_chunks.append(data.strip())
 
 
 def _same_origin(base_url: str, candidate_url: str) -> bool:
+    """判断两个地址是否同源。"""
     base = urlparse(base_url)
     candidate = urlparse(candidate_url)
     return (base.scheme, base.netloc) == (candidate.scheme, candidate.netloc)
 
 
 def _is_html(content_type: str) -> bool:
+    """判断响应是否为 HTML 页面。"""
     lowered = content_type.lower()
     return "text/html" in lowered or "application/xhtml+xml" in lowered
 
@@ -61,6 +65,7 @@ def _append_finding(
     message: str,
     suggestion: str,
 ) -> None:
+    """追加一条页面级发现。"""
     findings.append(
         {
             "url": url,
@@ -73,6 +78,7 @@ def _append_finding(
 
 
 def _cookie_flag_state(response: requests.Response) -> Dict[str, bool]:
+    """提取 Cookie 安全属性状态。"""
     flags = {"secure": False, "httponly": False, "samesite": False}
     for cookie in response.cookies:
         if cookie.secure:
@@ -88,6 +94,7 @@ def _cookie_flag_state(response: requests.Response) -> Dict[str, bool]:
 
 
 def _extract_redirect_chain(response: requests.Response, start_url: str) -> List[Dict[str, Any]]:
+    """整理重定向链。"""
     chain: List[Dict[str, Any]] = []
     previous_url = start_url
     for hop in list(response.history) + [response]:
@@ -102,6 +109,78 @@ def _extract_redirect_chain(response: requests.Response, start_url: str) -> List
     return chain
 
 
+EXPOSED_PATTERNS: List[Tuple[re.Pattern[str], str, str]] = [
+    (
+        re.compile(r"(?i)\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)\b"),
+        "loopback address",
+        "页面源码中出现本机回环地址，可能暴露本地联调信息。",
+    ),
+    (
+        re.compile(r"(?i)\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"),
+        "private ip 10.x",
+        "页面源码中出现 10.x 私网地址，可能暴露内网拓扑。",
+    ),
+    (
+        re.compile(r"(?i)\b192\.168\.\d{1,3}\.\d{1,3}\b"),
+        "private ip 192.168.x.x",
+        "页面源码中出现 192.168 私网地址，可能暴露内网拓扑。",
+    ),
+    (
+        re.compile(r"(?i)\b172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}\b"),
+        "private ip 172.16-31.x.x",
+        "页面源码中出现 172.16-31 私网地址，可能暴露内网拓扑。",
+    ),
+    (
+        re.compile(r"(?i)(?:^|[\"'=\s/])(debug|test|staging|stage|preprod)(?:[./_-]|$)"),
+        "environment marker",
+        "页面源码中出现环境标识路径或子域，可能暴露测试或预发环境。",
+    ),
+    (
+        re.compile(r"(?i)(?:NODE_ENV\s*=\s*development|__DEV__|debug\s*=\s*true)"),
+        "debug flag",
+        "页面源码中出现调试开关或开发环境标识。",
+    ),
+    (
+        re.compile(r"(?i)(?:sourceMappingURL=|\.map\b|webpack://)"),
+        "source map",
+        "页面源码中出现 source map 或调试构建痕迹，可能帮助还原前端源码。",
+    ),
+    (
+        re.compile(r"(?i)\b(?:swagger|openapi|graphql|graphiql|playground|api-docs)\b"),
+        "api explorer",
+        "页面源码中出现接口文档或调试入口，可能扩大攻击面。",
+    ),
+] 
+
+
+def _detect_exposed_info(body: str) -> Tuple[List[str], str]:
+    """识别页面源码里的高信号暴露信息。"""
+    matched_patterns: List[str] = []
+    risk = "低"
+    medium_signals = {
+        "loopback address",
+        "private ip 10.x",
+        "private ip 192.168.x.x",
+        "private ip 172.16-31.x.x",
+    }
+    low_signals = {
+        "environment marker",
+        "debug flag",
+        "source map",
+        "api explorer",
+    }
+
+    for regex, label, description in EXPOSED_PATTERNS:
+        if regex.search(body):
+            matched_patterns.append(f"{label}: {description}")
+            if label in medium_signals:
+                risk = "中"
+            elif label in low_signals and risk != "中":
+                risk = "低"
+
+    return matched_patterns, risk
+
+
 def scan_pages(
     session: requests.Session,
     start_url: str,
@@ -111,6 +190,7 @@ def scan_pages(
     max_depth: int = 2,
     progress_callback=None,
 ) -> Dict[str, Any]:
+    """执行同源页面级安全检查。"""
     findings: List[Dict[str, Any]] = []
     visited: Set[str] = set()
     queue: Deque[Tuple[str, int]] = deque([(start_url, 0)])
@@ -127,6 +207,7 @@ def scan_pages(
     last_progress_text = ""
 
     def update_progress(percent: int, text: str) -> None:
+        """向外汇报页面扫描进度。"""
         if progress_callback:
             nonlocal last_progress_percent, last_progress_text
             if percent == last_progress_percent and text == last_progress_text:
@@ -136,6 +217,7 @@ def scan_pages(
             progress_callback(percent, text)
 
     def bump_risk(level: str) -> None:
+        """更新当前最高风险等级。"""
         nonlocal highest_risk
         if level in risk_counts:
             risk_counts[level] += 1
@@ -150,6 +232,7 @@ def scan_pages(
         message: str,
         suggestion: str,
     ) -> None:
+        """记录一条页面发现并累计风险。"""
         nonlocal page_findings
         _append_finding(
             findings,
@@ -163,12 +246,12 @@ def scan_pages(
         bump_risk(risk)
 
     subchecks = [
-        ("check_page_redirects", "页面重定向", "检测是否从 HTTPS 跳到 HTTP，或跳转到其他源"),
-        ("check_page_headers", "页面安全头", "检查重点页面是否缺少 CSP、HSTS 等响应头"),
-        ("check_page_cookie_flags", "Cookie 安全属性", "检查 Cookie 是否包含 Secure、HttpOnly、SameSite"),
-        ("check_page_mixed_content", "混合内容", "检查 HTTPS 页面是否加载 HTTP 资源"),
-        ("check_page_forms", "不安全表单", "检查 form action 是否指向 HTTP"),
-        ("check_page_exposed_info", "暴露性信息", "检查页面源码是否暴露内网地址、测试路径或调试信息"),
+        ("check_page_redirects", "页面重定向", "检测是否从 HTTPS 跳到 HTTP，或跳转到其他源。"),
+        ("check_page_headers", "页面安全头", "检查重点页面是否缺少 CSP、HSTS 等响应头。"),
+        ("check_page_cookie_flags", "Cookie 安全属性", "检查 Cookie 是否包含 Secure、HttpOnly、SameSite。"),
+        ("check_page_mixed_content", "混合内容", "检查 HTTPS 页面是否加载 HTTP 资源。"),
+        ("check_page_forms", "不安全表单", "检查 form action 是否指向 HTTP。"),
+        ("check_page_exposed_info", "暴露性信息", "检查页面源码是否暴露内网地址、测试路径或调试信息。"),
     ]
     enabled_subchecks = [item for item in subchecks if getattr(options, item[0], False)]
 
@@ -357,19 +440,17 @@ def scan_pages(
                 70 + 14,
                 f"页面 {pages_scanned}/{max_pages}：暴露信息",
             )
-            lowered_body = body.lower()
-            exposed_patterns = ("10.", "127.0.0.1", "localhost", "/test", "debug", "dev")
-            for pattern in exposed_patterns:
-                if pattern in lowered_body:
-                    add_finding(
-                        "低",
-                        "exposed_info",
-                        base_url,
-                        f"页面源码中出现可疑暴露信息：{pattern}",
-                        "检查页面源码和前端配置，移除测试地址或调试信息。",
-                    )
-                    break
+            matched_patterns, risk = _detect_exposed_info(body)
+            if matched_patterns:
+                add_finding(
+                    risk,
+                    "exposed_info",
+                    base_url,
+                    "页面源码中发现可疑暴露信息：" + "；".join(matched_patterns),
+                    "检查页面源码、前端配置与构建产物，移除测试地址、调试标记和内网引用。",
+                )
 
+        # 只继续抓取同源 HTML 链接，避免扩成爬虫。
         for link in parser.links:
             absolute_link = urljoin(base_url, link)
             if _same_origin(start_url, absolute_link):

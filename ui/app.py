@@ -8,6 +8,7 @@ from scanner.options import ScanOptions
 
 
 def _preset_options(profile: str) -> ScanOptions:
+    """返回预设扫描配置。"""
     if profile == "快速模式":
         return ScanOptions(
             check_https=True,
@@ -15,7 +16,6 @@ def _preset_options(profile: str) -> ScanOptions:
             check_security_headers=True,
             check_trace=False,
             check_sensitive_paths=False,
-            check_ports=False,
             check_info_leak=True,
             check_page_scan=False,
         )
@@ -27,7 +27,6 @@ def _preset_options(profile: str) -> ScanOptions:
             check_security_headers=True,
             check_trace=True,
             check_sensitive_paths=True,
-            check_ports=False,
             check_info_leak=True,
             check_page_scan=True,
             check_page_mixed_content=True,
@@ -46,20 +45,19 @@ def _preset_options(profile: str) -> ScanOptions:
         check_security_headers=True,
         check_trace=True,
         check_sensitive_paths=True,
-        check_ports=False,
         check_info_leak=True,
         check_page_scan=False,
     )
 
 
 def _apply_profile(profile: str) -> None:
+    """把预设模式写回会话状态。"""
     defaults = _preset_options(profile)
     st.session_state["check_https"] = defaults.check_https
     st.session_state["check_ssl"] = defaults.check_ssl
     st.session_state["check_security_headers"] = defaults.check_security_headers
     st.session_state["check_trace"] = defaults.check_trace
     st.session_state["check_sensitive_paths"] = defaults.check_sensitive_paths
-    st.session_state["check_ports"] = defaults.check_ports
     st.session_state["check_info_leak"] = defaults.check_info_leak
     st.session_state["check_page_scan"] = defaults.check_page_scan
     st.session_state["check_page_mixed_content"] = defaults.check_page_mixed_content
@@ -73,6 +71,7 @@ def _apply_profile(profile: str) -> None:
 
 
 def _sync_page_scan_defaults() -> None:
+    """初始化页面级扫描默认值。"""
     defaults = _preset_options("深度模式")
     if "check_page_scan" not in st.session_state:
         st.session_state["check_page_scan"] = defaults.check_page_scan
@@ -95,16 +94,13 @@ def _sync_page_scan_defaults() -> None:
 
 
 def _mark_custom() -> None:
+    """将当前模式标记为自定义。"""
     st.session_state["scan_profile"] = "自定义模式"
 
 
 def run_app():
-    """
-    Streamlit 页面入口函数。
-    负责用户输入、调用扫描逻辑、展示检测结果。
-    """
+    """启动 Streamlit 页面。"""
 
-    # 页面基础配置
     st.set_page_config(
         page_title="WebGuardian 网站安全检测工具",
         layout="centered"
@@ -165,12 +161,6 @@ def run_app():
             key="check_sensitive_paths",
             on_change=_mark_custom,
         )
-        check_ports = st.checkbox(
-            "端口检测",
-            value=defaults.check_ports,
-            key="check_ports",
-            on_change=_mark_custom,
-        )
         check_info_leak = st.checkbox(
             "信息泄露检测",
             value=defaults.check_info_leak,
@@ -180,7 +170,7 @@ def run_app():
 
     st.divider()
     st.subheader("页面级安全检查")
-    st.caption("仅对同源 HTML 页面做轻量抓取，避免扩展成爬虫。")
+    st.caption("仅对同源 HTML 页面做轻量抓取分析，检查常见的安全问题。")
 
     page_scan_enabled = st.checkbox(
         "启用页面级安全检查",
@@ -271,14 +261,14 @@ def run_app():
     elif profile != current_profile:
         st.caption(f"已切换到 {profile}，下方选项已同步。")
 
-    # 用户输入区域
-    url = st.text_input(
-        "请输入网站地址",
-        placeholder="例如：https://example.com"
-    )
+    with st.form("scan_form", clear_on_submit=False):
+        url = st.text_input(
+            "请输入网站地址",
+            placeholder="例如：https://example.com",
+        )
+        submitted = st.form_submit_button("开始检测", type="primary")
 
-    # 点击按钮后开始检测
-    if st.button("开始检测", type="primary"):
+    if submitted:
         if not url.strip():
             st.warning("请先输入网站地址。")
             return
@@ -313,7 +303,6 @@ def run_app():
             check_security_headers=check_security_headers,
             check_trace=check_trace,
             check_sensitive_paths=check_sensitive_paths,
-            check_ports=check_ports,
             check_info_leak=check_info_leak,
             check_page_scan=st.session_state["check_page_scan"],
             check_page_mixed_content=st.session_state["check_page_mixed_content"],
@@ -343,23 +332,20 @@ def run_app():
             st.warning("页面级检查已启用，但未选择任何具体检查项。")
             return
 
-        # 调用 scanner 层进行检测
         with st.spinner("正在检测，请稍候..."):
             result = scan(url, progress_callback=on_progress, options=options)
 
 
-        # 如果检测入口校验失败，则直接展示错误信息
         if not result.get("ok"):
             st.error(f"检测失败：{result.get('error', '未知错误')}")
             return
 
-        # 展示核心评分信息
         st.subheader("检测结果概览")
 
         col1, col2, col3 = st.columns(3)
         col1.metric("安全评分", f"{result['score']}/100")
         col2.metric("安全等级", result["level"])
-        col3.metric("HTTPS", "是" if result["https"] else "否")
+        col3.metric("HTTPS", "是" if result["https"] is True else "否")
 
         page_summary = result.get("page_scan_summary", {})
         if page_summary.get("enabled"):
@@ -371,14 +357,12 @@ def run_app():
 
         st.divider()
 
-        # 展示基础信息
         st.subheader("基础信息")
         st.write("检测地址：", result["url"])
         st.write("主机名称：", result["host"])
 
         st.divider()
 
-        # TLS/SSL 检测结果
         st.subheader("TLS/SSL 检测")
 
         if result["ssl_valid"] is None:
@@ -393,7 +377,6 @@ def run_app():
 
         st.divider()
 
-        # HTTP 安全响应头检测结果
         st.subheader("HTTP 安全头检测")
 
         if result["security_header_score"] is None:
@@ -409,7 +392,6 @@ def run_app():
 
         st.divider()
 
-        # TRACE 方法检测
         st.subheader("TRACE 方法检测")
 
         if result["trace_enabled"] is True:
@@ -421,7 +403,6 @@ def run_app():
 
         st.divider()
 
-        # 敏感路径检测
         st.subheader("敏感路径检测")
 
         if result["sensitive_paths"]:
@@ -434,39 +415,26 @@ def run_app():
 
         st.divider()
 
-        # 端口检测
-        st.subheader("端口检测")
-
-        if result["open_ports"]:
-            st.write("开放端口：", result["open_ports"])
-        elif result["open_ports"] == []:
-            st.write("未发现开放的常见端口。")
-        else:
-            st.info("端口检测已关闭。")
-
-        st.divider()
-
-        # 信息泄露检测
         st.subheader("信息泄露检测")
 
         info_leak = result.get("info_leak", {})
 
-        server_header_exists = info_leak.get("server_header_exists")
-        x_powered_by_exists = info_leak.get("x_powered_by_exists")
+        version_exposed = info_leak.get("version_exposed")
+        framework_exposed = info_leak.get("framework_exposed")
 
-        if server_header_exists is True:
-            st.warning("响应头中存在 Server 字段，可能泄露服务器信息。")
-        elif server_header_exists is False:
-            st.success("响应头中未发现 Server 字段。")
+        if version_exposed is True:
+            st.warning("响应头中存在可识别的服务器版本特征。")
+        elif version_exposed is False:
+            st.success("未发现明显的服务器版本特征。")
         else:
-            st.info("Server 字段未检测。")
+            st.info("服务器版本特征未检测。")
 
-        if x_powered_by_exists is True:
-            st.warning("响应头中存在 X-Powered-By 字段，可能泄露技术栈信息。")
-        elif x_powered_by_exists is False:
-            st.success("响应头中未发现 X-Powered-By 字段。")
+        if framework_exposed is True:
+            st.warning("响应头中存在可识别的框架特征。")
+        elif framework_exposed is False:
+            st.success("未发现明显的框架特征。")
         else:
-            st.info("X-Powered-By 字段未检测。")
+            st.info("框架特征未检测。")
 
         st.divider()
 
@@ -507,7 +475,6 @@ def run_app():
                     )
                 )
 
-        # 展示部分异常，但不中断整体结果
         if result.get("errors"):
             st.divider()
             st.subheader("检测过程提示")
@@ -517,7 +484,6 @@ def run_app():
 
         st.divider()
 
-        # 原始数据展示，便于调试和后续扩展
         with st.expander("查看原始检测结果"):
             st.json(result)
 
