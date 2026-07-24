@@ -3,8 +3,9 @@
 from collections.abc import Callable
 from threading import Event
 
-from .control import check_stop
-from ..options import ScanOptions
+from scanner.options import ScanOptions
+
+from utils.control import check_stop
 
 
 class ScanProgress:
@@ -83,4 +84,6 @@ def _total_work(options: ScanOptions, sensitive_path_count: int) -> int:
         total += sensitive_path_count
     if options.check_page_scan:
         total += _page_work(options)
+        if options.check_page_sitecheck:
+            total += 1
     return total + 1

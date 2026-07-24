@@ -7,9 +7,9 @@ from urllib.parse import urljoin
 
 import requests
 
-from ..options import ScanOptions
-from ..utils.control import check_stop
-from ..utils.net import http_request
+from scanner.options import ScanOptions
+from utils.control import check_stop
+from utils.net import http_request
 from .page_checks import (
     PageParser,
     cookie_flag_state,
@@ -21,6 +21,7 @@ from .page_checks import (
     resolve_links,
 )
 from .page_results import PageScanResults
+from .sitecheck import scan_sitecheck
 
 
 def scan_pages(
@@ -47,7 +48,8 @@ def scan_pages(
         results.warnings.append(message)
         return results.to_dict(0, max_pages, max_depth, [], message)
 
-    page_work_units = 1 + len(enabled_checks)
+    page_checks = [name for name in enabled_checks if name != "check_page_sitecheck"]
+    page_work_units = 1 + len(page_checks)
     completed_work = 0
 
     def update_progress(percent: int, text: str) -> None:
@@ -65,19 +67,29 @@ def scan_pages(
         # 页面级进度按整体工作量折算。
         update_progress(round(completed_work / (max_pages * page_work_units) * 100), text)
 
-    def skip_remaining_checks(text: str) -> None:
+    def skip_remaining_checks(page_start_work: int, text: str) -> None:
         """跳过当前页面未执行的检查项。"""
         # 跳过的检查也要补足工作量，避免进度卡住。
-        for _ in range(page_work_units - completed_work % page_work_units):
+        page_progress = completed_work - page_start_work
+        for _ in range(max(0, page_work_units - page_progress)):
             complete_work(text)
 
-    update_progress(0, "正在准备页面级安全检查")
+    if options.check_page_sitecheck:
+        check_stop(stop_event)
+        update_progress(0, "正在分析 robots.txt 和 sitemap.xml")
+        results.sitecheck = scan_sitecheck(session, start_url, stop_event=stop_event)
+        seed_urls = results.sitecheck.get("seed_urls", []) if results.sitecheck else []
+        queue.extend((url, 0) for url in seed_urls)
+        complete_work("站点公开入口分析")
+
+    update_progress(round(completed_work / (max_pages * page_work_units) * 100), "正在准备页面级安全检查")
     while queue and pages_scanned < max_pages:
         check_stop(stop_event)
         current_url, depth = queue.popleft()
         if current_url in visited or depth > max_depth:
             continue
 
+        page_start_work = completed_work
         visited.add(current_url)
         scanned_urls.append(current_url)
         pages_scanned += 1
@@ -88,7 +100,7 @@ def scan_pages(
         except Exception as exc:
             results.add_finding("中", "request_error", current_url, f"页面请求失败：{exc}", "确认页面是否可访问，或降低扫描深度后重试。")
             complete_work(f"{page_label}：请求页面")
-            skip_remaining_checks(f"{page_label}：页面不可访问，跳过检查")
+            skip_remaining_checks(page_start_work, f"{page_label}：页面不可访问，跳过检查")
             continue
 
         complete_work(f"{page_label}：请求页面")
@@ -98,11 +110,11 @@ def scan_pages(
             complete_work(f"{page_label}：重定向链")
         if options.check_page_redirects and not is_same_origin(start_url, final_url):
             # 跨源后不再继续解析当前页。
-            skip_remaining_checks(f"{page_label}：跨源跳转，跳过检查")
+            skip_remaining_checks(page_start_work, f"{page_label}：跨源跳转，跳过检查")
             continue
         if not is_html(response.headers.get("Content-Type", "")):
             # 只检查 HTML 页面。
-            skip_remaining_checks(f"{page_label}：非 HTML 页面，跳过检查")
+            skip_remaining_checks(page_start_work, f"{page_label}：非 HTML 页面，跳过检查")
             continue
 
         check_stop(stop_event)
@@ -123,6 +135,7 @@ def _enabled_checks(options: ScanOptions) -> List[str]:
         name for name in (
             "check_page_redirects", "check_page_headers", "check_page_cookie_flags",
             "check_page_mixed_content", "check_page_forms", "check_page_exposed_info",
+            "check_page_sitecheck",
         ) if getattr(options, name)
     ]
 

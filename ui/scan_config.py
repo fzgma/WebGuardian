@@ -21,6 +21,7 @@ _PAGE_OPTION_KEYS = (
     "check_page_redirects",
     "check_page_headers",
     "check_page_exposed_info",
+    "check_page_sitecheck",
     "page_scan_max_pages",
     "page_scan_max_depth",
 )
@@ -75,6 +76,7 @@ def validate_scan_options(options: ScanOptions) -> str | None:
         options.check_page_redirects,
         options.check_page_headers,
         options.check_page_exposed_info,
+        options.check_page_sitecheck,
     )
     if options.check_page_scan and not any(page_checks):
         return "页面级检查已启用，但未选择任何具体检查项。"
@@ -109,6 +111,7 @@ def _preset_options(profile: str) -> ScanOptions:
             check_page_redirects=True,
             check_page_headers=True,
             check_page_exposed_info=True,
+            check_page_sitecheck=True,
             page_scan_max_pages=10,
             page_scan_max_depth=2,
         )
@@ -148,6 +151,7 @@ def _initialize_state() -> None:
         ("check_page_redirects", defaults.check_page_redirects),
         ("check_page_headers", defaults.check_page_headers),
         ("check_page_exposed_info", defaults.check_page_exposed_info),
+        ("check_page_sitecheck", defaults.check_page_sitecheck),
         ("page_scan_max_pages", defaults.page_scan_max_pages),
         ("page_scan_max_depth", defaults.page_scan_max_depth),
     ):
@@ -186,7 +190,7 @@ def _render_basic_options(
             key="check_security_headers",
             on_change=_mark_custom,
         )
-        check_trace = st.checkbox("TRACE 方法检测", key="check_trace", on_change=_mark_custom)
+        check_trace = st.checkbox("HTTP 方法检测", key="check_trace", on_change=_mark_custom,help="检查 TRACE 方法是否启用，以及其他 HTTP 方法。如options、put、delete等。这些方法可能被滥用，增加攻击面。")
 
     with col_b:
         check_sensitive_paths = st.checkbox(
@@ -195,9 +199,10 @@ def _render_basic_options(
             on_change=_mark_custom,
         )
         check_info_leak = st.checkbox(
-            "信息泄露检测",
+            "暴露信息检测",
             key="check_info_leak",
             on_change=_mark_custom,
+            help="检查响应头和页面源码里的常见暴露信息。",
         )
     return (
         check_https,
@@ -266,9 +271,14 @@ def _render_page_scan_options(defaults: ScanOptions) -> None:
             "页面响应头", "check_page_headers", "检查重点页面是否缺少 CSP、HSTS 等头。"
         )
         _render_page_checkbox(
-            "暴露性信息",
+            "页面源码暴露信息",
             "check_page_exposed_info",
-            "检查页面源码是否直接暴露内网地址、测试路径或调试信息。",
+            "检查页面源码中的内网地址、调试标记、构建信息和重点 meta 字段。",
+        )
+        _render_page_checkbox(
+            "robots/sitemap 暴露面",
+            "check_page_sitecheck",
+            "检查 robots.txt 和 sitemap.xml 中公开的站点入口与敏感暴露面。",
         )
 
     st.caption("，".join(("扫描页数受限", "仅跟进同源链接", "只解析 HTML 页面")))

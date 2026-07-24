@@ -16,10 +16,6 @@ DEFAULT_HEADERS = {
     "Accept-Encoding": "gzip, deflate, br, zstd",
     "Upgrade-Insecure-Requests": "1",
     "Cache-Control": "max-age=0",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
 }
 FULLWIDTH_URL_SYMBOLS = {"：", "／", "？", "＃", "＠", "［", "］", "（", "）", "．", "，", "＆", "＝", "％"}
 

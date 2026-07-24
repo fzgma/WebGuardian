@@ -1,6 +1,6 @@
 import streamlit as st
 
-from scanner.utils.net import validate_input_url
+from utils.net import validate_input_url
 from ui.scan_runtime import get_scan_runtime, render_scan_runtime, start_scan
 from ui.scan_config import render_scan_config, validate_scan_options
 

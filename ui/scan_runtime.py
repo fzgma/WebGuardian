@@ -8,9 +8,9 @@ from typing import Any
 
 import streamlit as st
 
-from scanner.utils.control import ScanInterrupted
 from scanner.options import ScanOptions
 from scanner.scanner import scan
+from utils.control import ScanInterrupted
 from ui.scan_errors import ScanErrorInfo, explain_scan_error
 from ui.result_view import render_scan_result
 

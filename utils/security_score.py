@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Tuple
 
-from ..options import ScanOptions
+from scanner.options import ScanOptions
 
 
 def calculate_score(result: Dict[str, Any], options: ScanOptions) -> Tuple[int, str]:
@@ -23,18 +23,23 @@ def calculate_score(result: Dict[str, Any], options: ScanOptions) -> Tuple[int, 
             score += 10
 
     if options.check_security_headers:
-        max_score += 30
+        max_score += len(["Content-Security-Policy", "Strict-Transport-Security", "X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy", "Permissions-Policy", "Cross-Origin-Opener-Policy", "Cross-Origin-Resource-Policy"]) * 5
         score += result.get("security_header_score", 0) or 0
 
     if options.check_info_leak:
-        max_score += 20
+        max_score += 30
         info_leak = result.get("info_leak", {})
         score += 10 if info_leak.get("version_exposed") is False else 0
         score += 10 if info_leak.get("framework_exposed") is False else 0
+        score += 10 if info_leak.get("meta_exposed") is False else 0
 
     if options.check_trace:
         max_score += 10
-        score += 10 if result.get("trace_enabled") is False else 0
+        method_info = result.get("http_methods", {})
+        if method_info:
+            score += 10 if method_info.get("trace_enabled") is False and not method_info.get("exposed_methods") else 0
+        else:
+            score += 10 if result.get("trace_enabled") is False else 0
 
     if options.check_sensitive_paths:
         max_score += 10

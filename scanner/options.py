@@ -19,6 +19,7 @@ class ScanOptions:
     check_page_redirects: bool = False
     check_page_headers: bool = False
     check_page_exposed_info: bool = False
+    check_page_sitecheck: bool = False
     page_scan_max_pages: int = 10
     page_scan_max_depth: int = 2
 
@@ -64,6 +65,7 @@ class ScanOptions:
             check_page_redirects=bool(data.get("check_page_redirects", False)),
             check_page_headers=bool(data.get("check_page_headers", False)),
             check_page_exposed_info=bool(data.get("check_page_exposed_info", False)),
+            check_page_sitecheck=bool(data.get("check_page_sitecheck", False)),
             page_scan_max_pages=int(data.get("page_scan_max_pages", 10) or 10),
             page_scan_max_depth=int(data.get("page_scan_max_depth", 2) or 2),
         )
@@ -81,6 +83,7 @@ class ScanOptions:
             self.check_page_redirects,
             self.check_page_headers,
             self.check_page_exposed_info,
+            self.check_page_sitecheck,
         )
 
         count = sum(

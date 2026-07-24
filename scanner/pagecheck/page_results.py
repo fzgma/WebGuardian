@@ -11,6 +11,7 @@ class PageScanResults:
         self.findings: List[Dict[str, Any]] = []
         self.risk_counts = {"低": 0, "中": 0, "高": 0}
         self.highest_risk = "无"
+        self.sitecheck: Dict[str, Any] | None = None
         self.redirect_issues: List[Dict[str, Any]] = []
         self.redirect_chains: List[Dict[str, Any]] = []
         self.warnings: List[str] = []
@@ -32,6 +33,7 @@ class PageScanResults:
             "max_depth": max_depth, "finding_count": len(self.findings),
             "page_findings": len(self.findings), "highest_risk": self.highest_risk,
             "findings": self.findings, "risk_counts": self.risk_counts,
+            "sitecheck": self.sitecheck,
             "visited_urls": scanned_urls, "redirect_issues": self.redirect_issues,
             "redirect_chains": self.redirect_chains, "warnings": self.warnings,
             "message": message,
