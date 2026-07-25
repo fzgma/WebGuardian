@@ -1,12 +1,20 @@
 # WebGuardian 网站安全检测工具
 
+## 🚀立即体验
+
+无需本地部署，点击链接即可使用：
+
+ ### [WebGuardian Streamlit](https://web-guardian.streamlit.app)
+
+注意：请在合法授权范围内使用。检测结果会受到网络环境影响，结果仅供参考
+
 ## 项目说明
 
-WebGuardian 是一个基于 Python 和 Streamlit 开发的网站基础安全检测工具。输入目标网站地址后，工具会执行可配置的基础站点检测和页面级安全检查，并输出安全评分、安全等级、风险提示和原始检测数据。
+WebGuardian 是一个基于 Python 和 Streamlit 开发的网站基础安全检测工具。输入目标网站地址后，工具会执行可配置的基础站点检测、DNS 安全检查和页面级安全检查，并输出安全评分、安全等级、风险提示、检测耗时和原始检测数据。
 
 项目定位为轻量的安全基线检查工具，不替代专业漏洞扫描、渗透测试或持续安全监测。
 
-当前仅支持 `http` 和 `https` 协议；`file`、`ftp`、`ssh` 等非 HTTP(S) 协议会被直接拒绝。
+当前仅支持 `http` 和 `https` 协议；`file`、`ftp`、`ssh` 等非 HTTP 协议会被直接拒绝。
 
 ## 一、主要功能
 
@@ -22,23 +30,27 @@ WebGuardian 是一个基于 Python 和 Streamlit 开发的网站基础安全检�
 
 检查常见安全头是否存在，当前重点关注 `CSP`、`HSTS`、`X-Frame-Options` 等项，用于降低 XSS、点击劫持和 MIME 嗅探风险。
 
-### 4. HTTP 方法检测
+### 4. DNS 安全检测
+
+检查域名的 `SPF`、`DMARC` 和 `CAA` 记录，帮助发现邮件伪造和证书签发范围过宽等问题。
+
+### 5. HTTP 方法检测
 
 先发 `OPTIONS` 请求，再结合 `Allow` 和 `Access-Control-Allow-Methods` 判断服务器暴露了哪些方法，同时单独检测 `TRACE` 是否可用。`PUT`、`DELETE`、`PATCH` 只做暴露推断，不做副作用实测。
 
-### 5. 敏感路径检测
+### 6. 敏感路径检测
 
 检查常见后台、备份、调试和接口文档路径，如 `/admin`、`/docs`、`/api/docs`、`/swagger`、`/phpinfo.php` 等。命中路径不等于漏洞，但通常说明暴露面偏大。
 
-### 6. 暴露信息检测
+### 7. 暴露信息检测
 
 检查响应头和页面源码中的高信号暴露项，包括服务器/框架标识、版本特征，以及 `generator`、`application-name`、`og:site_name`、`author` 等重点 `meta` 字段。
 
-### 7. 页面级检查
+### 8. 页面级检查
 
 页面级检查从首页开始轻量抓取，只跟进同源 HTML 链接，并限制抓取页数和深度。可选项包括混合内容、不安全表单、Cookie 安全属性、重定向链、页面响应头、页面源码暴露信息，以及 `robots.txt / sitemap.xml` 暴露面分析。
 
-### 8. 扫描模式与进度
+### 9. 扫描模式与进度
 
 界面提供标准、快速、深度和自定义四种模式。修改任一选项后会自动切换为自定义模式，输入 URL 后可按 Enter 直接开始扫描，扫描中也可以随时停止。
 
@@ -51,10 +63,11 @@ WebGuardian 是一个基于 Python 和 Streamlit 开发的网站基础安全检�
 | 检测项 | 最高分 | 得分条件 |
 |---|---:|---|
 | HTTPS | 10 | 最终地址使用 HTTPS |
-| SSL/TLS | 20 | 证书有效 10 分；剩余天数大于 7 天再得 10 分 |
-| HTTP 安全响应头 | 40 | 常见安全头完整度，当前重点关注 CSP、HSTS、X-Frame-Options |
-| 暴露信息检测 | 30 | 未发现响应头和 meta 暴露项 |
-| HTTP 方法检测 | 10 | 未发现 TRACE 可用或其他高风险方法暴露 |
+| SSL/TLS | 20 | 证书有效、有效期、协议与套件、证书链完整性 |
+| DNS 安全检测 | 15 | SPF、DMARC、CAA 越完整，得分越高 |
+| HTTP 安全响应头 | 30 | 常见安全头完整度，当前重点关注 CSP、HSTS、X-Frame-Options |
+| 暴露信息检测 | 10 | 未发现响应头和 meta 暴露项 |
+| HTTP 方法检测 | 5 | 未发现 TRACE 可用或其他高风险方法暴露 |
 | 敏感路径 | 10 | 未发现内置敏感路径 |
 
 | 分数范围 | 等级 |
@@ -69,6 +82,7 @@ WebGuardian 是一个基于 Python 和 Streamlit 开发的网站基础安全检�
 
 ```text
 main.py                    # 直接启动 Streamlit 应用
+app.py                     # 页面流程、URL 表单和扫描调用
 scanner/
   options.py               # 扫描配置模型
   scanner.py               # 主扫描编排
@@ -83,19 +97,24 @@ utils/
   net.py                   # 请求会话、URL 校验和地址规范化
   scan_progress.py         # 按工作量计算扫描进度
   security_score.py        # 安全评分与等级规则
+  timer.py                 # 扫描耗时统计
 ui/
-  app.py                   # 页面流程、URL 表单和扫描调用
   scan_config.py           # 扫描模式、配置控件和配置校验
   scan_runtime.py          # 扫描状态、后台执行、停止控制和错误展示
   scan_errors.py           # 错误归类与友好提示
   result_view.py           # 检测结果展示
+requirements.txt           # 运行依赖
 ```
 
 ## 四、安装与运行
 
 ### 1. Python 版本要求
 
-建议使用 **Python 3.10 或更高版本**。项目代码使用了联合类型注解等语法，低于 3.10 的解释器不兼容。
+最低要求：**Python3.10**
+
+项目代码使用了联合类型注解等语法，低于 3.10 的解释器不兼容。
+
+建议使用 ：**Python 3.13**。
 
 ### 2. 创建虚拟环境
 
@@ -116,7 +135,7 @@ source .venv/bin/activate
 ### 3. 安装依赖
 
 ```bash
-pip install streamlit requests cryptography beautifulsoup4
+pip install -r requirements.txt
 ```
 
 如需同步第三方依赖许可信息，可额外安装 `pip-licenses`。
@@ -128,8 +147,12 @@ pip install streamlit requests cryptography beautifulsoup4
 ```powershell
 py main.py
 ```
+或
+```
+streamlit run app.py
+```
 
-`main.py` 已包含 Streamlit 启动逻辑，不需要再执行 `streamlit run`。启动成功后，终端会显示本地访问地址，默认通常为 `http://localhost:8501`。
+`main.py` 已包含 Streamlit 启动逻辑。也可以用传统方式`streamlit run `启动成功后，终端会显示本地访问地址，默认通常为 `http://localhost:8501`。
 
 ## 五、使用方式
 
@@ -169,9 +192,10 @@ WebGuardian 采用 **GNU General Public License v3.0（GPL-3.0）** 开源协议
 本项目当前使用的第三方库包括：
 
 - `streamlit`：**Apache-2.0**
-- `requests`：**Apache Software License**
+- `requests`：**Apache-2.0**
 - `cryptography`：**Apache-2.0**
 - `beautifulsoup4`：**MIT License**
+- `dnspython`：**ISC**
 
  ### 上述依赖库均为开源软件。具体条款以各项目官方仓库、随包附带的许可文件为准。
 ---

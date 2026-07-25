@@ -1,7 +1,5 @@
 """扫描运行状态和控制面板。"""
 
-from __future__ import annotations
-
 import threading
 from dataclasses import dataclass, field
 from typing import Any
@@ -11,6 +9,7 @@ import streamlit as st
 from scanner.options import ScanOptions
 from scanner.scanner import scan
 from utils.control import ScanInterrupted
+from utils.timer import Timer
 from ui.scan_errors import ScanErrorInfo, explain_scan_error
 from ui.result_view import render_scan_result
 
@@ -27,6 +26,7 @@ class ScanRuntime:
     error_hint: str | None = None
     error_detail: str | None = None
     error_kind: str | None = None
+    elapsed_seconds: float | None = None
     stop_requested: bool = False
     stop_event: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
     thread: threading.Thread | None = field(default=None, repr=False, compare=False)
@@ -81,6 +81,7 @@ class ScanRuntime:
         self.error_hint = None
         self.error_detail = None
         self.error_kind = None
+        self.elapsed_seconds = None
 
     def request_stop(self) -> None:
         """请求停止当前扫描。"""
@@ -101,6 +102,7 @@ class ScanRuntime:
                 "error_hint": self.error_hint,
                 "error_detail": self.error_detail,
                 "error_kind": self.error_kind,
+                "elapsed_seconds": self.elapsed_seconds,
                 "stop_requested": self.stop_requested,
                 "running": self.thread is not None and self.thread.is_alive(),
             }
@@ -116,6 +118,7 @@ class ScanRuntime:
 
     def _run(self, url: str, options: ScanOptions, stop_event: threading.Event) -> None:
         """在线程中执行扫描并记录结果。"""
+        timer = Timer()
         try:
             result = scan(
                 url,
@@ -134,22 +137,26 @@ class ScanRuntime:
                 self.error_hint = None
                 self.error_detail = None
                 self.error_kind = None
+                self.elapsed_seconds = round(timer.elapsed_seconds(), 2)
             return
         except Exception as exc:  # 捕获所有异常，避免线程崩溃
             with self.lock:
                 info = self._set_error(f"{type(exc).__name__}: {exc}")
                 self.status = "invalid" if info.kind == "validation" else "error"
+                self.elapsed_seconds = round(timer.elapsed_seconds(), 2)
             return
 
         with self.lock:
             if result.get("ok", True):
                 self.status = "finished"
                 self.result = result
+                self.elapsed_seconds = result.get("elapsed_seconds")
                 self.progress_percent = 100
                 self.progress_text = "检测完成"
             else:
                 info = self._set_error(result.get("error", "检测失败"))
                 self.status = "invalid" if info.kind == "validation" else "error"
+                self.elapsed_seconds = result.get("elapsed_seconds")
 
     def on_progress(self, percent: int, text: str) -> None:
         """记录扫描进度。"""
@@ -205,14 +212,31 @@ def render_scan_runtime() -> None:
         error_hint = state.get("error_hint")
         if error_hint:
             st.info(error_hint)
+        elapsed_seconds = state.get("elapsed_seconds")
+        if elapsed_seconds is not None:
+            st.caption(f"检测耗时：{_format_elapsed_seconds(elapsed_seconds)}")
         return
 
     if state["status"] == "error":
         st.error(f"检测失败：{state['error']}")
         if state.get("error_hint"):
             st.info(state["error_hint"])
+        elapsed_seconds = state.get("elapsed_seconds")
+        if elapsed_seconds is not None:
+            st.caption(f"检测耗时：{_format_elapsed_seconds(elapsed_seconds)}")
         error_detail = state.get("error_detail")
         if error_detail and error_detail not in {state.get("error"), state.get("error_hint")}:
             with st.expander("查看详细错误"):
                 st.code(error_detail, wrap_lines=True)
         return
+
+
+def _format_elapsed_seconds(value: Any) -> str:
+    """把耗时格式化为秒。"""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return "未知"
+    if seconds < 0:
+        return "未知"
+    return f"{seconds:.2f} 秒"

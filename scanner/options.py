@@ -8,6 +8,7 @@ class ScanOptions:
     """保存一次扫描的开关配置。"""
     check_https: bool = True
     check_ssl: bool = True
+    check_dns_security: bool = True
     check_security_headers: bool = True
     check_trace: bool = True
     check_sensitive_paths: bool = True
@@ -54,6 +55,7 @@ class ScanOptions:
         return cls(
             check_https=bool(data.get("check_https", True)),
             check_ssl=bool(data.get("check_ssl", True)),
+            check_dns_security=bool(data.get("check_dns_security", True)),
             check_security_headers=bool(data.get("check_security_headers", True)),
             check_trace=bool(data.get("check_trace", True)),
             check_sensitive_paths=bool(data.get("check_sensitive_paths", True)),
@@ -90,6 +92,7 @@ class ScanOptions:
             (
                 self.check_https,
                 self.check_ssl,
+                self.check_dns_security,
                 self.check_security_headers,
                 self.check_trace,
                 self.check_sensitive_paths,

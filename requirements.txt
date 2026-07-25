@@ -1,0 +1,5 @@
+beautifulsoup4>=4.15.0
+cryptography>=49.0.0
+dnspython>=2.8.0
+requests>=2.34.2
+streamlit==1.59.2

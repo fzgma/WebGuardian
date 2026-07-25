@@ -1,7 +1,5 @@
 """扫描错误归类与提示。"""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 import re
 

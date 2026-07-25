@@ -5,7 +5,7 @@ from streamlit.web.bootstrap import run
 
 def start_app() -> None:
     """启动 Streamlit 应用。"""
-    app_path = Path(__file__).parent / "ui" / "app.py"
+    app_path = Path(__file__).parent / "app.py"
     run(str(app_path), False, [], {})
 
 

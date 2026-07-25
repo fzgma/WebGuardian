@@ -1,4 +1,5 @@
 import ipaddress
+import re
 from typing import Any
 
 import streamlit as st
@@ -8,10 +9,12 @@ def render_scan_result(result: dict[str, Any]) -> None:
     """渲染扫描结果。"""
     st.subheader("检测结果概览")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("安全评分", f"{result['score']}/100")
     col2.metric("安全等级", result["level"])
     col3.metric("HTTPS", "是" if result["https"] is True else "否")
+    elapsed_seconds = result.get("elapsed_seconds")
+    col4.metric("检测耗时", _format_elapsed_seconds(elapsed_seconds))
 
     page_summary = result.get("page_scan_summary", {})
     if page_summary.get("enabled"):
@@ -58,6 +61,11 @@ def render_scan_result(result: dict[str, Any]) -> None:
         st.write("证书剩余天数：", result["ssl_days_left"])
     elif result["ssl_valid"] is False:
         st.warning("未检测到有效的 SSL 证书，或证书检测失败。")
+
+    _render_tls_details(result.get("tls", {}))
+
+    st.divider()
+    _render_dns_security(result.get("dns_security"))
 
     st.divider()
     st.subheader("HTTP 安全头检测")
@@ -160,6 +168,119 @@ def _render_http_methods(result: dict[str, Any]) -> None:
         st.info("HTTP 方法检测结果不完整。")
 
 
+def _render_dns_security(dns_security: dict[str, Any] | None) -> None:
+    """展示 DNS 安全检测结果。"""
+    st.subheader("DNS 安全检测")
+    if not dns_security or dns_security.get("enabled") is None:
+        st.info("DNS 安全检测已关闭。")
+        return
+
+    status = dns_security.get("status", "未知")
+    domain = dns_security.get("domain", "")
+    lookup_domain = dns_security.get("lookup_domain", "")
+    if status == "skipped":
+        st.info("DNS 安全检测已跳过。")
+        for warning in dns_security.get("warnings", []):
+            st.caption(warning)
+        return
+
+    if status == "error":
+        st.warning("DNS 安全检测执行异常，结果可能不完整。")
+
+    st.write(f"检测域名：{domain}")
+    if lookup_domain and lookup_domain != domain:
+        st.caption(f"实际查询域名：{lookup_domain}")
+
+    _render_dns_record_block("SPF", dns_security.get("spf", {}))
+    _render_dns_record_block("DMARC", dns_security.get("dmarc", {}))
+    _render_dns_record_block("CAA", dns_security.get("caa", {}))
+
+    findings = dns_security.get("findings", [])
+    if findings:
+        _render_ranked_findings("DNS 安全检测问题", findings)
+    elif status != "error":
+        st.success("未发现明显的 DNS 安全问题。")
+
+    for warning in dns_security.get("warnings", []):
+        st.info(warning)
+
+
+def _render_tls_details(tls_info: dict[str, Any] | None) -> None:
+    """展示 TLS 配置详情。"""
+    if not tls_info or tls_info.get("enabled") is None:
+        return
+
+    if tls_info.get("warnings"):
+        for warning in tls_info.get("warnings", []):
+            st.warning(warning)
+
+    protocol = tls_info.get("protocol", "")
+    cipher = tls_info.get("cipher", {}) or {}
+    certificate = tls_info.get("certificate", {}) or {}
+    supported_protocols = tls_info.get("supported_protocols", [])
+    weak_protocols = tls_info.get("weak_protocols", [])
+    chain_complete = tls_info.get("chain_complete")
+    chain_length = tls_info.get("chain_length")
+
+    if protocol:
+        st.caption(f"协商协议：{protocol}")
+    if cipher.get("cipher_name"):
+        st.caption(
+            f"加密套件：{cipher.get('cipher_name')} / {cipher.get('cipher_bits', 0)} bits"
+        )
+    subject_text = _format_tls_dn_summary(certificate.get("subject", ""))
+    issuer_text = _format_tls_dn_summary(certificate.get("issuer", ""))
+    if subject_text:
+        st.caption(f"证书主体：{subject_text}")
+    if issuer_text:
+        st.caption(f"签发机构：{issuer_text}")
+
+    with st.expander("查看 TLS 详细信息"):
+        if certificate:
+            st.caption("证书信息")
+            for label, value in (
+                ("生效时间", certificate.get("not_before", "")),
+                ("过期时间", certificate.get("not_after", "")),
+                ("序列号", certificate.get("serial_number", "")),
+            ):
+                if value:
+                    st.write(f"{label}：{value}")
+
+        if supported_protocols:
+            st.caption(f"支持的协议：{', '.join(supported_protocols)}")
+        if weak_protocols:
+            st.warning(f"检测到弱协议：{', '.join(weak_protocols)}")
+        if chain_length is not None:
+            st.write(f"证书链长度：{chain_length}")
+        if chain_complete is True:
+            st.success("证书链看起来是完整的。")
+        elif chain_complete is False:
+            st.warning("证书链可能不完整。")
+        if tls_info.get("cipher_weak") is True:
+            st.warning("当前协商的加密套件偏弱。")
+        elif tls_info.get("cipher_weak") is False:
+            st.success("当前协商的加密套件看起来正常。")
+
+
+def _render_dns_record_block(label: str, data: dict[str, Any]) -> None:
+    """展示单类 DNS 记录摘要。"""
+    if not data:
+        return
+
+    records = data.get("records", [])
+    present = data.get("present")
+    policy = data.get("policy")
+    summary = "已发现" if present else "未发现"
+    if policy:
+        summary = f"{summary}，策略：{policy}"
+    st.caption(f"{label}：{summary}")
+    if records:
+        with st.expander(f"查看 {label} 记录"):
+            st.code("\n".join(records))
+    if label == "CAA" and data.get("issuers"):
+        st.caption(f"允许签发来源：{', '.join(data['issuers'])}")
+
+
 def _render_info_leak_details(info_leak: dict[str, Any]) -> None:
     """展示响应头和 meta 的细节暴露项。"""
     header_findings = info_leak.get("header_findings", [])
@@ -204,6 +325,42 @@ def _format_http_status(status: Any) -> str:
         500: "500（服务器内部错误）",
     }
     return descriptions.get(code, f"{code}")
+
+
+def _format_elapsed_seconds(value: Any) -> str:
+    """把耗时格式化为秒。"""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return "未知"
+    if seconds < 0:
+        return "未知"
+    return f"{seconds:.2f} 秒"
+
+
+def _format_tls_dn_summary(value: Any) -> str:
+    """把证书 DN 压缩成国家和机构名摘要。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    country = _extract_dn_value(text, "countryName")
+    organization = _extract_dn_value(text, "organizationName")
+
+    parts: list[str] = []
+    if country:
+        parts.append(f"国家：{country.lower()}")
+    if organization:
+        parts.append(f"机构名：{organization}")
+    return "，".join(parts)
+
+
+def _extract_dn_value(text: str, field: str) -> str:
+    """从逗号分隔的 DN 文本中取出单字段值。"""
+    match = re.search(rf"(?:^|,\s*){re.escape(field)}=([^,]+)", text)
+    if not match:
+        return ""
+    return match.group(1).strip()
 
 
 def _render_sitecheck(sitecheck: dict[str, Any] | None) -> None:

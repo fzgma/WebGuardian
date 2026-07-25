@@ -8,6 +8,7 @@ _PROFILE_OPTIONS = ["标准模式", "快速模式", "深度模式", "自定义�
 _BASIC_OPTION_KEYS = (
     "check_https",
     "check_ssl",
+    "check_dns_security",
     "check_security_headers",
     "check_trace",
     "check_sensitive_paths",
@@ -48,14 +49,7 @@ def render_scan_config() -> ScanOptions:
 
     defaults = _preset_options(profile if profile != "自定义模式" else "标准模式")
 
-    (
-        check_https,
-        check_ssl,
-        check_security_headers,
-        check_trace,
-        check_sensitive_paths,
-        check_info_leak,
-    ) = _render_basic_options(defaults)
+    _render_basic_options(defaults)
     _render_page_scan_options(defaults)
 
     if profile == "自定义模式":
@@ -89,6 +83,7 @@ def _preset_options(profile: str) -> ScanOptions:
         return ScanOptions(
             check_https=True,
             check_ssl=True,
+            check_dns_security=True,
             check_security_headers=True,
             check_trace=False,
             check_sensitive_paths=False,
@@ -100,6 +95,7 @@ def _preset_options(profile: str) -> ScanOptions:
         return ScanOptions(
             check_https=True,
             check_ssl=True,
+            check_dns_security=True,
             check_security_headers=True,
             check_trace=True,
             check_sensitive_paths=True,
@@ -119,6 +115,7 @@ def _preset_options(profile: str) -> ScanOptions:
     return ScanOptions(
         check_https=True,
         check_ssl=True,
+        check_dns_security=True,
         check_security_headers=True,
         check_trace=True,
         check_sensitive_paths=True,
@@ -136,6 +133,7 @@ def _initialize_state() -> None:
     for key, value in (
         ("check_https", defaults.check_https),
         ("check_ssl", defaults.check_ssl),
+        ("check_dns_security", defaults.check_dns_security),
         ("check_security_headers", defaults.check_security_headers),
         ("check_trace", defaults.check_trace),
         ("check_sensitive_paths", defaults.check_sensitive_paths),
@@ -179,12 +177,18 @@ def _mark_custom() -> None:
 
 def _render_basic_options(
     defaults: ScanOptions,
-) -> tuple[bool, bool, bool, bool, bool, bool]:
+) -> tuple[bool, bool, bool, bool, bool, bool, bool]:
     """渲染基础检测选项。"""
     col_a, col_b = st.columns(2)
     with col_a:
         check_https = st.checkbox("HTTPS 检测", key="check_https", on_change=_mark_custom)
-        check_ssl = st.checkbox("SSL 证书检测", key="check_ssl", on_change=_mark_custom)
+        check_ssl = st.checkbox("TLS/SSL 检测", key="check_ssl", on_change=_mark_custom)
+        check_dns_security = st.checkbox(
+            "DNS 安全检测",
+            key="check_dns_security",
+            on_change=_mark_custom,
+            help="检查 SPF、DMARC 和 CAA 记录。",
+        )
         check_security_headers = st.checkbox(
             "安全响应头检测",
             key="check_security_headers",
@@ -207,6 +211,7 @@ def _render_basic_options(
     return (
         check_https,
         check_ssl,
+        check_dns_security,
         check_security_headers,
         check_trace,
         check_sensitive_paths,
