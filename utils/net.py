@@ -19,6 +19,12 @@ DEFAULT_HEADERS = {
 }
 FULLWIDTH_URL_SYMBOLS = {"：", "／", "？", "＃", "＠", "［", "］", "（", "）", "．", "，", "＆", "＝", "％"}
 
+
+def _has_explicit_scheme(raw_url: str) -> bool:
+    """判断输入里是否显式指定了协议。"""
+    candidate = (raw_url or "").strip().lower()
+    return "://" in candidate
+
 def normalize_input_scheme(raw_url: str) -> str:
     """把 URL 协议前缀统一成小写。"""
     stripped = raw_url.strip()
@@ -83,7 +89,7 @@ def validate_input_url(raw_url: str) -> Tuple[bool, str]:
     except ValueError:
         return False, "URL 格式不正确，请检查是否包含全角符号或其他非法字符。或确认是否为有效的IPv4/IPv6地址或域名。"
 
-    if parsed.scheme and parsed.scheme not in {"http", "https"}:
+    if _has_explicit_scheme(candidate) and parsed.scheme not in {"http", "https"}:
         return False, "URL 仅支持 http 和 https 协议"
 
     if has_hidden_url_chars(candidate):
@@ -149,7 +155,7 @@ def normalize_url(raw_url: str, session: requests.Session) -> str:
     raw_url = normalize_input_scheme(raw_url)
 
     parsed = urlparse(raw_url)
-    if parsed.scheme and parsed.scheme not in {"http", "https"}:
+    if _has_explicit_scheme(raw_url) and parsed.scheme not in {"http", "https"}:
         raise ValueError("URL 仅支持 http 和 https 协议")
 
     if raw_url.startswith(("http://", "https://")):

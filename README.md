@@ -85,8 +85,12 @@ main.py                    # 直接启动 Streamlit 应用
 app.py                     # 页面流程、URL 表单和扫描调用
 scanner/
   options.py               # 扫描配置模型
-  scanner.py               # 主扫描编排
-  tls.py                   # TLS/SSL 证书检测
+  scanner.py               # 主扫描编排和 ScanContext
+  basescan/
+    __init__.py            # 基础站点扫描入口
+    base_checks.py         # HTTPS、安全头、暴露信息、HTTP 方法、敏感路径
+    tls.py                 # TLS/SSL 证书与配置检测
+    dns.py                 # SPF、DMARC、CAA 检测
   pagecheck/
     page_scan.py           # 同源页面抓取与检查编排
     page_checks.py         # HTML 解析及页面安全检查规则
@@ -95,6 +99,7 @@ scanner/
 utils/
   control.py               # 扫描中断信号
   net.py                   # 请求会话、URL 校验和地址规范化
+  result_composer.py       # 小结果包装、大结果合成和展示模型转换
   scan_progress.py         # 按工作量计算扫描进度
   security_score.py        # 安全评分与等级规则
   timer.py                 # 扫描耗时统计
@@ -102,7 +107,7 @@ ui/
   scan_config.py           # 扫描模式、配置控件和配置校验
   scan_runtime.py          # 扫描状态、后台执行、停止控制和错误展示
   scan_errors.py           # 错误归类与友好提示
-  result_view.py           # 检测结果展示
+  result_view.py           # 展示模型解析和检测结果展示
 requirements.txt           # 运行依赖
 ```
 
@@ -166,7 +171,30 @@ streamlit run app.py
 
 若所有检测项均关闭，或页面级检查未选择任何子项，应用会在开始扫描前提示修正配置。
 
-## 六、注意事项
+
+## 六、结果架构
+
+扫描结果采用“模块小结果 -> 统一大结果 -> 展示模型”的分层结构：
+
+1. `scanner/scanner.py` 创建一次扫描的 `ScanContext`，保存目标地址、会话、扫描配置、进度和停止信号等运行态信息。
+2. HTTPS、TLS、DNS、安全响应头、HTTP 方法、敏感路径、信息泄露和页面扫描分别生成独立的 section result。
+3. `utils/result_composer.py` 统一包装和合成结果，聚合各模块的 `warnings`、`findings` 和错误，并生成评分、等级、耗时和页面扫描摘要。
+4. `ui/result_view.py` 通过 `build_result_view_model()` 将大结果转换为展示层模型，再按模块渲染，避免 UI 直接依赖扫描编排细节。
+
+成功扫描结果的顶层结构如下：
+
+```text
+{
+  "target": {...},    # 输入地址、规范化地址、主机和解析 IP
+  "checks": {...},    # 各检测模块的独立结果
+  "summary": {...},   # 评分、等级、耗时和页面扫描摘要
+  "errors": [...],    # 检测过程中的错误和警告
+  "warnings": [...]
+}
+```
+
+
+## 七、注意事项
 
 1. 仅检测自己拥有或已经获得明确授权的网站。
 2. 本工具不尝试绕过认证、WAF、访问控制或其他安全机制。
@@ -175,7 +203,7 @@ streamlit run app.py
 5. 页面级检查受最大页数和最大深度限制，不能代表整个站点的完整审计结果。
 6. `0.0.0.0`、`::` 以及 `224.0.0.0-255.255.255.255` 这类地址会被当作无效输入。
 
-## 七、法律声明与使用许可
+## 八、法律声明与使用许可
 
 ### 开源许可
 

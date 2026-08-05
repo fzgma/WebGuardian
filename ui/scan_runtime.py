@@ -150,13 +150,13 @@ class ScanRuntime:
             if result.get("ok", True):
                 self.status = "finished"
                 self.result = result
-                self.elapsed_seconds = result.get("elapsed_seconds")
+                self.elapsed_seconds = result.get("summary", {}).get("elapsed_seconds")
                 self.progress_percent = 100
                 self.progress_text = "检测完成"
             else:
                 info = self._set_error(result.get("error", "检测失败"))
                 self.status = "invalid" if info.kind == "validation" else "error"
-                self.elapsed_seconds = result.get("elapsed_seconds")
+                self.elapsed_seconds = result.get("summary", {}).get("elapsed_seconds")
 
     def on_progress(self, percent: int, text: str) -> None:
         """记录扫描进度。"""
@@ -196,7 +196,7 @@ def render_scan_runtime() -> None:
         if not state["stop_requested"]:
             if st.button("停止检测", type="secondary", use_container_width=True, key="stop_scan_button"):
                 request_stop()
-                st.info("已请求停止。")
+                st.info("已请求停止检测，正在等待当前任务结束。")
         return
 
     if state["status"] == "finished" and state["result"]:
@@ -204,7 +204,7 @@ def render_scan_runtime() -> None:
         return
 
     if state["status"] == "stopped":
-        st.warning("检测已停止。")
+        st.warning("检测已停止")
         return
 
     if state["status"] == "invalid":

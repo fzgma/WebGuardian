@@ -6,10 +6,13 @@ import re
 import socket
 import ssl
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 from cryptography import x509
+
+from utils.control import check_stop
+from utils.result_composer import wrap_section_result
 
 _TLS_VERSION_SPECS: list[tuple[str, ssl.TLSVersion, str]] = [
     ("TLS 1.0", ssl.TLSVersion.TLSv1, "弱"),
@@ -18,6 +21,31 @@ _TLS_VERSION_SPECS: list[tuple[str, ssl.TLSVersion, str]] = [
     ("TLS 1.3", ssl.TLSVersion.TLSv1_3, "现代"),
 ]
 _WEAK_CIPHER_RE = re.compile(r"(?i)\b(?:NULL|EXPORT|RC4|3DES|DES|MD5|IDEA|SEED)\b")
+
+
+def run_tls_check(context: Any, response: Any) -> dict[str, Any]:
+    """执行 TLS 检测并返回标准 section。"""
+    options = context.scan_options
+    if not options.check_ssl:
+        return wrap_section_result(
+            "tls",
+            _disabled_result(),
+            enabled=False,
+            status="disabled",
+            summary="SSL 检测已关闭。",
+        )
+
+    check_stop(context.stop_event)
+    tls_result = inspect_tls_configuration(response.url)
+    context.progress.update("正在检测 SSL 证书", 1)
+    return wrap_section_result(
+        "tls",
+        tls_result,
+        enabled=True,
+        status="ok" if tls_result.get("ok") else "error",
+        summary="TLS / SSL 检测完成。",
+        warnings=tls_result.get("warnings", []),
+    )
 
 
 def inspect_tls_configuration(url: str, timeout: float = 5.0) -> Dict[str, Any]:
@@ -31,8 +59,14 @@ def inspect_tls_configuration(url: str, timeout: float = 5.0) -> Dict[str, Any]:
     result = _empty_result(host, port)
 
     protocol_probes = _probe_tls_versions(host, port, timeout=timeout)
-    result["supported_protocols"] = [item["label"] for item in protocol_probes if item["supported"]]
-    result["weak_protocols"] = [item["label"] for item in protocol_probes if item["supported"] and item["risk"] == "弱"]
+    result["supported_protocols"] = [
+        item["label"] for item in protocol_probes if item["supported"]
+    ]
+    result["weak_protocols"] = [
+        item["label"]
+        for item in protocol_probes
+        if item["supported"] and item["risk"] == "弱"
+    ]
     result["protocol_probes"] = protocol_probes
 
     try:
@@ -45,7 +79,6 @@ def inspect_tls_configuration(url: str, timeout: float = 5.0) -> Dict[str, Any]:
 
     cert = handshake["certificate"]
     negotiated = handshake["negotiated"]
-
     expiry = _certificate_expiry(cert)
     days_left = (expiry - datetime.now(timezone.utc)).days if expiry is not None else -1
     cipher_name = negotiated.get("cipher_name", "")
@@ -64,14 +97,24 @@ def inspect_tls_configuration(url: str, timeout: float = 5.0) -> Dict[str, Any]:
     result["certificate"] = {
         "subject": _name_to_text(cert.subject),
         "issuer": _name_to_text(cert.issuer),
-        "not_before": _format_dt(cert.not_valid_before_utc if hasattr(cert, "not_valid_before_utc") else cert.not_valid_before),
+        "not_before": _format_dt(
+            cert.not_valid_before_utc
+            if hasattr(cert, "not_valid_before_utc")
+            else cert.not_valid_before
+        ),
         "not_after": _format_dt(expiry),
         "serial_number": format(cert.serial_number, "x"),
     }
-    result["supported_protocols_label"] = "，".join(result["supported_protocols"]) if result["supported_protocols"] else ""
+    result["supported_protocols_label"] = (
+        "，".join(result["supported_protocols"])
+        if result["supported_protocols"]
+        else ""
+    )
 
     if result["weak_protocols"]:
-        result["warnings"].append(f"检测到弱 TLS 协议支持：{', '.join(result['weak_protocols'])}")
+        result["warnings"].append(
+            f"检测到弱 TLS 协议支持：{', '.join(result['weak_protocols'])}"
+        )
     if result["cipher_weak"]:
         result["warnings"].append(f"检测到弱加密套件：{cipher_name}")
     if result["chain_complete"] is False:
@@ -80,10 +123,27 @@ def inspect_tls_configuration(url: str, timeout: float = 5.0) -> Dict[str, Any]:
     return result
 
 
-def check_ssl_certificate(url: str, timeout: float = 5.0) -> Tuple[bool, int]:
-    """保留兼容入口，只返回证书有效性和剩余天数。"""
-    tls_info = inspect_tls_configuration(url, timeout=timeout)
-    return bool(tls_info.get("ssl_valid")), int(tls_info.get("ssl_days_left", -1))
+def _disabled_result() -> Dict[str, Any]:
+    """返回关闭 TLS 检测时使用的 section 数据。"""
+    return {
+        "ok": False,
+        "ssl_valid": None,
+        "ssl_days_left": None,
+        "host": "",
+        "port": 443,
+        "protocol": "",
+        "cipher": {},
+        "cipher_weak": None,
+        "supported_protocols": [],
+        "supported_protocols_label": "",
+        "weak_protocols": [],
+        "protocol_probes": [],
+        "chain_verified": None,
+        "chain_length": None,
+        "chain_complete": None,
+        "certificate": {},
+        "warnings": [],
+    }
 
 
 def _empty_result(host: str = "", port: int = 443) -> Dict[str, Any]:
@@ -142,8 +202,12 @@ def _name_to_text(name: x509.Name) -> str:
 def _make_context(*, verify: bool, version: ssl.TLSVersion | None = None) -> ssl.SSLContext:
     """创建 TLS 上下文。"""
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    context.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED if version is None else version
-    context.maximum_version = ssl.TLSVersion.MAXIMUM_SUPPORTED if version is None else version
+    context.minimum_version = (
+        ssl.TLSVersion.MINIMUM_SUPPORTED if version is None else version
+    )
+    context.maximum_version = (
+        ssl.TLSVersion.MAXIMUM_SUPPORTED if version is None else version
+    )
     if verify:
         context.check_hostname = True
         context.verify_mode = ssl.CERT_REQUIRED
@@ -197,14 +261,18 @@ def _perform_verified_handshake(host: str, port: int, *, timeout: float) -> Dict
             if hasattr(tls_sock, "get_verified_chain"):
                 try:
                     verified_chain = tls_sock.get_verified_chain()
-                    chain_length = len(verified_chain) if verified_chain is not None else None
+                    chain_length = (
+                        len(verified_chain) if verified_chain is not None else None
+                    )
                     chain_complete = chain_length is not None and chain_length >= 2
                 except Exception:
                     chain_verified = True
             elif hasattr(tls_sock, "get_unverified_chain"):
                 try:
                     unverified_chain = tls_sock.get_unverified_chain()
-                    chain_length = len(unverified_chain) if unverified_chain is not None else None
+                    chain_length = (
+                        len(unverified_chain) if unverified_chain is not None else None
+                    )
                     chain_complete = chain_length is not None and chain_length >= 2
                 except Exception:
                     chain_verified = True

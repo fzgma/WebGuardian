@@ -1,5 +1,6 @@
 import streamlit as st
 
+from scanner.options import ScanOptions
 from utils.net import validate_input_url
 from ui.scan_runtime import get_scan_runtime, render_scan_runtime, start_scan
 from ui.scan_config import render_scan_config, validate_scan_options
@@ -17,6 +18,14 @@ def run_app():
     st.caption("输入网站地址后开始检测。")
 
     options = render_scan_config()
+    render_scan_form(options)
+
+    render_scan_runtime()
+
+
+@st.fragment(run_every=0.5)
+def render_scan_form(options: ScanOptions) -> None:
+    """渲染扫描表单并跟随运行态刷新按钮。"""
     runtime = get_scan_runtime()
     running = runtime.is_running()
 
@@ -29,28 +38,39 @@ def run_app():
                 "否则可能无法连接。"
             ),
         )
-        submitted = st.form_submit_button("开始检测", type="primary")
+        submitted = st.form_submit_button(
+            "检测进行中..." if running else "开始检测",
+            type="primary",
+            disabled=running,
+        )
 
-    if submitted:
-        if running:
-            st.warning("检测正在进行中，请先停止当前任务或等待完成。")
-        elif not url.strip():
-            st.warning("请先输入网站地址。")
-        else:
-            runtime.clear_previous_result()
-            url_ok, url_error = validate_input_url(url)
-            if not url_ok:
-                st.warning(url_error)
-                return
-            validation_error = validate_scan_options(options)
-            if validation_error:
-                st.warning(validation_error)
-            elif start_scan(url, options):
-                pass  # 扫描已启动，scan_runtime 会自动更新状态
-            else:
-                st.warning("检测正在进行中，请先停止当前任务或等待完成。")
+    if not submitted:
+        return
 
-    render_scan_runtime()
+    if running:
+        st.warning("检测正在进行中，请先停止当前任务或等待完成。")
+        return
+
+    if not url.strip():
+        st.warning("请先输入网站地址。")
+        return
+
+    url_ok, url_error = validate_input_url(url)
+    if not url_ok:
+        st.warning(url_error)
+        return
+
+    runtime.clear_previous_result()
+
+    validation_error = validate_scan_options(options)
+    if validation_error:
+        st.warning(validation_error)
+        return
+
+    if start_scan(url, options):
+        st.rerun(scope="fragment")
+    else:
+        st.warning("检测正在进行中，请先停止当前任务或等待完成。")
 
 
 if __name__ == "__main__":

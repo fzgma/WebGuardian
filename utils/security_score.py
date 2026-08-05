@@ -3,7 +3,9 @@
 from typing import Any, Dict, Tuple
 
 from scanner.options import ScanOptions
+from utils.result_composer import get_section
 
+_HTTPS_MAX = 10
 _SECURITY_HEADERS_MAX = 30
 _INFO_LEAK_WEIGHTS = {
     "version_exposed": 4,
@@ -11,51 +13,64 @@ _INFO_LEAK_WEIGHTS = {
     "meta_exposed": 3,
 }
 _DNS_SECURITY_MAX = 15
-_HTTP_METHOD_MAX = 5
+_HTTP_TRACE_MAX = 3
+_HTTP_EXPOSED_METHODS_MAX = 2
+_HTTP_METHOD_MAX = _HTTP_TRACE_MAX + _HTTP_EXPOSED_METHODS_MAX
+_SENSITIVE_PATHS_MAX = 10
 _TLS_MAX = 20
 
 
 def calculate_score(result: Dict[str, Any], options: ScanOptions) -> Tuple[int, str]:
-    """计算安全评分和等级。"""
+    """按已启用的站点检查计算归一化评分。
+
+    页面级扫描是附加风险信息，不计入站点安全总分，避免扫描深度影响基础评分。
+    """
     score = 0
     max_score = 0
 
-    if options.check_https:
-        max_score += 10
-        if result.get("https"):
-            score += 10
+    https = get_section(result, "https", {})
+    if options.check_https and https.get("enabled") is True:
+        max_score += _HTTPS_MAX
+        if https.get("value") is True:
+            score += _HTTPS_MAX
 
-    if options.check_ssl:
+    tls = get_section(result, "tls", {})
+    if options.check_ssl and tls.get("enabled") is True:
         max_score += _TLS_MAX
-        score += _tls_score(result.get("tls", {}), result)
+        score += _tls_score(tls)
 
-    if options.check_dns_security:
-        dns_security = result.get("dns_security", {})
-        if dns_security.get("status") != "skipped":
-            max_score += _DNS_SECURITY_MAX
-            score += _dns_security_score(dns_security)
+    dns_security = get_section(result, "dns_security", {})
+    if (
+        options.check_dns_security
+        and dns_security.get("enabled") is True
+        and dns_security.get("status") != "skipped"
+    ):
+        max_score += _DNS_SECURITY_MAX
+        score += _dns_security_score(dns_security)
 
-    if options.check_security_headers:
+    security_headers = get_section(result, "security_headers", {})
+    if options.check_security_headers and security_headers.get("enabled") is True:
         max_score += _SECURITY_HEADERS_MAX
-        score += result.get("security_header_score", 0) or 0
+        score += security_headers.get("score", 0) or 0
 
     if options.check_info_leak:
-        max_score += 10
-        info_leak = result.get("info_leak", {})
+        info_leak = get_section(result, "info_leak", {})
+        if info_leak.get("enabled") is True:
+            max_score += 10
+        else:
+            info_leak = {}
         for field, weight in _INFO_LEAK_WEIGHTS.items():
             score += weight if info_leak.get(field) is False else 0
 
-    if options.check_trace:
+    method_info = get_section(result, "http_methods", {})
+    if options.check_trace and method_info.get("enabled") is True:
         max_score += _HTTP_METHOD_MAX
-        method_info = result.get("http_methods", {})
-        trace_enabled = method_info.get("trace_enabled") if method_info else result.get("trace_enabled")
-        exposed_methods = method_info.get("exposed_methods", []) if method_info else []
-        if trace_enabled is False and not exposed_methods:
-            score += _HTTP_METHOD_MAX
+        score += _http_methods_score(method_info)
 
-    if options.check_sensitive_paths:
-        max_score += 10
-        score += 10 if not result.get("sensitive_paths") else 0
+    sensitive_paths = get_section(result, "sensitive_paths", {})
+    if options.check_sensitive_paths and sensitive_paths.get("enabled") is True:
+        max_score += _SENSITIVE_PATHS_MAX
+        score += _SENSITIVE_PATHS_MAX if not sensitive_paths.get("paths") else 0
 
     score = round(score / max_score * 100) if max_score else 0
     return score, _security_level(score)
@@ -70,22 +85,18 @@ def _security_level(score: int) -> str:
     return "C级"
 
 
-def _tls_score(tls_info: Dict[str, Any], result: Dict[str, Any]) -> int:
+def _tls_score(tls_info: Dict[str, Any]) -> int:
     """计算 TLS 配置得分。"""
     if not tls_info:
         return 0
 
     score = 0
     ssl_valid = tls_info.get("ssl_valid")
-    if ssl_valid is None:
-        ssl_valid = result.get("ssl_valid")
 
     if ssl_valid:
         score += 8
 
     days_left = tls_info.get("ssl_days_left")
-    if days_left is None:
-        days_left = result.get("ssl_days_left")
     if isinstance(days_left, int) and days_left > 7:
         score += 4
 
@@ -103,6 +114,16 @@ def _tls_score(tls_info: Dict[str, Any], result: Dict[str, Any]) -> int:
         score += 2
 
     return min(score, _TLS_MAX)
+
+
+def _http_methods_score(method_info: Dict[str, Any]) -> int:
+    """按 TRACE 和其他方法暴露分别给分。"""
+    score = 0
+    if method_info.get("trace_enabled") is False:
+        score += _HTTP_TRACE_MAX
+    if method_info.get("trace_enabled") is False and not method_info.get("exposed_methods"):
+        score += _HTTP_EXPOSED_METHODS_MAX
+    return min(score, _HTTP_METHOD_MAX)
 
 
 def _dns_security_score(dns_security: Dict[str, Any]) -> int:

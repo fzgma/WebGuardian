@@ -1,0 +1,473 @@
+"""基础站点检查：HTTPS、安全头、暴露信息、HTTP 方法和敏感路径。"""
+
+import re
+from collections.abc import Mapping
+from typing import Any, Dict, List
+from urllib.parse import urlparse
+
+from bs4 import BeautifulSoup
+from bs4.element import Tag
+import requests
+
+from utils.control import check_stop
+from utils.net import http_request
+from utils.result_composer import wrap_section_result
+
+SECURITY_HEADERS = [
+    "Content-Security-Policy",
+    "Strict-Transport-Security",
+    "X-Frame-Options",
+    "X-Content-Type-Options",
+    "Referrer-Policy",
+    "Permissions-Policy",
+    "Cross-Origin-Opener-Policy",
+    "Cross-Origin-Resource-Policy",
+]
+INFO_LEAK_META_KEYS = {
+    "generator",
+    "application-name",
+    "og:site_name",
+    "author",
+    "copyright",
+    "version",
+    "build",
+    "release",
+    "app-version",
+}
+GENERIC_META_VALUES = {
+    "",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "unknown",
+    "default",
+    "website",
+    "web",
+    "page",
+    "homepage",
+    "home",
+    "首页",
+    "站点",
+}
+SENSITIVE_PATHS = [
+    "/admin",
+    "/admin/login",
+    "/backup",
+    "/.env",
+    "/.git/HEAD",
+    "/test",
+    "/test/login",
+    "/debug",
+    "/api/docs",
+    "/phpinfo.php",
+    "/server-status",
+    "/swagger",
+    "/swagger-ui",
+    "/actuator",
+    "/console",
+    "/docs",
+]
+SERVER_NAME_RE = re.compile(r"(?i)\b(?:apache|nginx|iis|openresty|tomcat)\b")
+FRAMEWORK_NAME_RE = re.compile(
+    r"(?i)\b(?:php|asp\.net|express|django|spring|laravel|rails|koa|fastapi|flask)\b"
+)
+VERSION_NUMBER_RE = re.compile(r"\b\d+(?:\.\d+){1,3}\b")
+
+
+def run_base_checks(context: Any, response: requests.Response) -> dict[str, dict[str, Any]]:
+    """执行基础站点检查并返回各 section。"""
+    options = context.scan_options
+    session = context.session
+    normalized_url = context.normalized_url
+    stop_event = context.stop_event
+    progress = context.progress
+    checks: dict[str, dict[str, Any]] = {}
+
+    check_stop(stop_event)
+    https_value = check_https(response.url)
+    checks["https"] = wrap_section_result(
+        "https",
+        {"value": https_value},
+        enabled=options.check_https,
+        status="ok" if options.check_https else "disabled",
+        summary="最终访问地址使用 HTTPS。" if https_value else "最终访问地址未使用 HTTPS。",
+    )
+    if options.check_https:
+        progress.update("正在检测 HTTPS", 1)
+
+    headers = response.headers
+    if options.check_security_headers:
+        missing = [header for header in SECURITY_HEADERS if header not in headers]
+        coverage = (len(SECURITY_HEADERS) - len(missing)) / len(SECURITY_HEADERS)
+        checks["security_headers"] = wrap_section_result(
+            "security_headers",
+            {
+                "score": round(coverage * 30),
+                "missing": missing,
+                "coverage": round(coverage * 100),
+            },
+            enabled=True,
+            status="ok",
+            summary="HTTP 安全响应头检测完成。",
+        )
+        progress.update("正在检测 HTTP 安全头", 1)
+    else:
+        checks["security_headers"] = wrap_section_result(
+            "security_headers",
+            {"score": None, "missing": [], "coverage": None},
+            enabled=False,
+            status="disabled",
+            summary="HTTP 安全响应头检测已关闭。",
+        )
+
+    if options.check_info_leak:
+        header_findings, version_exposed, framework_exposed = _detect_header_exposures(headers)
+        meta_fields = _detect_meta_fields(response.text or "")
+        checks["info_leak"] = wrap_section_result(
+            "info_leak",
+            {
+                "version_exposed": version_exposed,
+                "framework_exposed": framework_exposed,
+                "meta_exposed": bool(meta_fields),
+                "meta_fields": meta_fields,
+                "header_findings": header_findings,
+            },
+            enabled=True,
+            status="ok",
+            summary="暴露信息检测完成。",
+            findings=header_findings + meta_fields,
+        )
+        progress.update("正在检测响应头暴露信息", 1)
+    else:
+        checks["info_leak"] = wrap_section_result(
+            "info_leak",
+            {
+                "version_exposed": None,
+                "framework_exposed": None,
+                "meta_exposed": None,
+                "meta_fields": [],
+                "header_findings": [],
+            },
+            enabled=False,
+            status="disabled",
+            summary="暴露信息检测已关闭。",
+        )
+
+    if options.check_trace:
+        check_stop(stop_event)
+        method_info = _detect_http_methods(session, normalized_url, stop_event=stop_event)
+        checks["http_methods"] = wrap_section_result(
+            "http_methods",
+            method_info,
+            enabled=True,
+            status="ok" if not method_info.get("warnings") else "warn",
+            summary="HTTP 方法检测完成。",
+            warnings=method_info.get("warnings", []),
+        )
+        progress.update("正在检测 HTTP 方法", 1)
+    else:
+        checks["http_methods"] = wrap_section_result(
+            "http_methods",
+            {
+                "options_status": None,
+                "allow_methods": [],
+                "cors_methods": [],
+                "exposed_methods": [],
+                "trace_enabled": None,
+                "warnings": [],
+            },
+            enabled=False,
+            status="disabled",
+            summary="HTTP 方法检测已关闭。",
+        )
+
+    if options.check_sensitive_paths:
+        found_paths: list[str] = []
+        path_warnings: list[str] = []
+        parsed_url = urlparse(normalized_url)
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        for path in SENSITIVE_PATHS:
+            check_stop(stop_event)
+            try:
+                path_response = http_request(
+                    session,
+                    "GET",
+                    base_url + path,
+                    allow_redirects=False,
+                )
+                if path_response.status_code in (200, 301, 302, 401, 403):
+                    found_paths.append(path)
+            except Exception as exc:
+                path_warnings.append(f"敏感路径 {path} 检测异常：{exc}")
+            progress.update(f"正在检测敏感路径：{path}", 1)
+
+        checks["sensitive_paths"] = wrap_section_result(
+            "sensitive_paths",
+            {"paths": found_paths},
+            enabled=True,
+            status="ok",
+            summary="敏感路径检测完成。",
+            warnings=path_warnings,
+        )
+    else:
+        checks["sensitive_paths"] = wrap_section_result(
+            "sensitive_paths",
+            {"paths": []},
+            enabled=False,
+            status="disabled",
+            summary="敏感路径检测已关闭。",
+        )
+
+    return checks
+
+
+def check_https(url: str) -> bool:
+    """判断最终地址是否走 HTTPS。"""
+    return url.startswith("https://")
+
+
+def field_exposes_version(value: str, name_re: re.Pattern[str]) -> bool:
+    """判断文本是否同时包含技术栈名称和版本号。"""
+    return bool(value and name_re.search(value) and VERSION_NUMBER_RE.search(value))
+
+
+def _detect_header_exposures(
+    headers: Mapping[str, str],
+) -> tuple[list[dict[str, Any]], bool, bool]:
+    """识别响应头里的高信号暴露。"""
+    findings: list[dict[str, Any]] = []
+
+    server = headers.get("Server", "")
+    if server:
+        if field_exposes_version(server, SERVER_NAME_RE):
+            findings.append(
+                {
+                    "field": "Server",
+                    "risk": "中",
+                    "kind": "server_version",
+                    "value": server,
+                    "message": f"响应头中存在可识别的服务器版本特征：{server}",
+                    "suggestion": "尽量隐藏或泛化 Server 头，避免暴露具体服务器版本。",
+                }
+            )
+        elif SERVER_NAME_RE.search(server):
+            findings.append(
+                {
+                    "field": "Server",
+                    "risk": "低",
+                    "kind": "server_name",
+                    "value": server,
+                    "message": f"响应头中存在可识别的服务器特征：{server}",
+                    "suggestion": "如无必要，尽量减少 Server 头中暴露的服务器信息。",
+                }
+            )
+
+    x_powered_by = headers.get("X-Powered-By", "")
+    if x_powered_by:
+        if field_exposes_version(x_powered_by, FRAMEWORK_NAME_RE):
+            findings.append(
+                {
+                    "field": "X-Powered-By",
+                    "risk": "中",
+                    "kind": "framework_version",
+                    "value": x_powered_by,
+                    "message": f"响应头中存在可识别的框架版本特征：{x_powered_by}",
+                    "suggestion": "移除或收敛 X-Powered-By 头，避免暴露框架版本。",
+                }
+            )
+        elif FRAMEWORK_NAME_RE.search(x_powered_by):
+            findings.append(
+                {
+                    "field": "X-Powered-By",
+                    "risk": "低",
+                    "kind": "framework_name",
+                    "value": x_powered_by,
+                    "message": f"响应头中存在可识别的框架特征：{x_powered_by}",
+                    "suggestion": "如无必要，避免在响应头中直接暴露框架名称。",
+                }
+            )
+
+    aspnet_version = headers.get("X-AspNet-Version", "")
+    if aspnet_version and VERSION_NUMBER_RE.search(aspnet_version):
+        findings.append(
+            {
+                "field": "X-AspNet-Version",
+                "risk": "中",
+                "kind": "framework_version",
+                "value": aspnet_version,
+                "message": f"响应头中存在 ASP.NET 版本特征：{aspnet_version}",
+                "suggestion": "关闭或隐藏 ASP.NET 版本信息，减少指纹暴露。",
+            }
+        )
+
+    aspnet_mvc_version = headers.get("X-AspNetMvc-Version", "")
+    if aspnet_mvc_version and VERSION_NUMBER_RE.search(aspnet_mvc_version):
+        findings.append(
+            {
+                "field": "X-AspNetMvc-Version",
+                "risk": "中",
+                "kind": "framework_version",
+                "value": aspnet_mvc_version,
+                "message": f"响应头中存在 ASP.NET MVC 版本特征：{aspnet_mvc_version}",
+                "suggestion": "关闭或隐藏 ASP.NET MVC 版本信息，减少指纹暴露。",
+            }
+        )
+
+    generator = headers.get("X-Generator", "")
+    if generator and not _is_generic_value(generator):
+        findings.append(
+            {
+                "field": "X-Generator",
+                "risk": "低",
+                "kind": "generator",
+                "value": generator,
+                "message": f"响应头中存在生成器特征：{generator}",
+                "suggestion": "如无必要，避免在响应头中输出生成器信息。",
+            }
+        )
+
+    version_exposed = any(
+        item["kind"] in {"server_version", "framework_version"} for item in findings
+    )
+    framework_exposed = any(
+        item["kind"] in {"framework_version", "framework_name", "generator"}
+        for item in findings
+    )
+    return findings, version_exposed, framework_exposed
+
+
+def _detect_meta_fields(body: str) -> list[dict[str, Any]]:
+    """提取页面源码中的重点 meta 字段。"""
+    if not body:
+        return []
+
+    soup = BeautifulSoup(body, "html.parser")
+    findings: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for tag in soup.find_all("meta"):
+        if not isinstance(tag, Tag):
+            continue
+
+        key_name = _meta_field_name(tag)
+        if key_name not in INFO_LEAK_META_KEYS:
+            continue
+
+        content = _normalize_meta_value(tag.get("content"))
+        if not content or _is_generic_value(content):
+            continue
+
+        key = (key_name, content.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        findings.append(
+            {
+                "field": key_name,
+                "risk": "低",
+                "value": content,
+                "message": f"页面源码中存在重点 meta 字段：{key_name}={content}",
+                "suggestion": "检查页面源码中的 meta 信息，避免泄露生成器、站点名或版本信息。",
+            }
+        )
+
+    return findings
+
+
+def _detect_http_methods(
+    session: requests.Session,
+    url: str,
+    *,
+    stop_event=None,
+) -> Dict[str, Any]:
+    """检测 HTTP 方法暴露情况。"""
+    result: Dict[str, Any] = {
+        "enabled": True,
+        "options_status": None,
+        "allow_methods": [],
+        "cors_methods": [],
+        "exposed_methods": [],
+        "trace_enabled": None,
+        "warnings": [],
+    }
+
+    check_stop(stop_event)
+    try:
+        options_resp = http_request(session, "OPTIONS", url, allow_redirects=False)
+    except Exception as exc:
+        result["warnings"].append(f"HTTP 方法 OPTIONS 检测异常：{exc}")
+        options_resp = None
+
+    if options_resp is not None:
+        result["options_status"] = options_resp.status_code
+        allow_methods = _parse_methods_header(options_resp.headers.get("Allow", ""))
+        cors_methods = _parse_methods_header(
+            options_resp.headers.get("Access-Control-Allow-Methods", "")
+        )
+        result["allow_methods"] = allow_methods
+        result["cors_methods"] = cors_methods
+        result["exposed_methods"] = _merge_http_methods(allow_methods, cors_methods)
+
+    check_stop(stop_event)
+    try:
+        trace_resp = http_request(session, "TRACE", url, allow_redirects=False)
+        result["trace_enabled"] = trace_resp.status_code < 400
+    except Exception as exc:
+        result["warnings"].append(f"TRACE 检测异常：{exc}")
+        result["trace_enabled"] = None
+
+    return result
+
+
+def _parse_methods_header(value: str) -> List[str]:
+    """解析 Allow 或 Access-Control-Allow-Methods 头。"""
+    methods: List[str] = []
+    seen: set[str] = set()
+    for raw in re.split(r"[, ]+", value or ""):
+        method = raw.strip().upper()
+        if not method or method in seen:
+            continue
+        if not re.fullmatch(r"[A-Z][A-Z0-9_-]*", method):
+            continue
+        seen.add(method)
+        methods.append(method)
+    return methods
+
+
+def _merge_http_methods(*groups: List[str]) -> List[str]:
+    """合并多个方法声明并去重。"""
+    safe_methods = {"GET", "HEAD", "POST", "OPTIONS", "TRACE"}
+    merged: List[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for method in group or []:
+            if method in safe_methods or method in seen:
+                continue
+            seen.add(method)
+            merged.append(method)
+    return merged
+
+
+def _meta_field_name(tag: Tag) -> str:
+    """获取 meta 字段名。"""
+    for attr in ("name", "property", "itemprop", "http-equiv"):
+        value = tag.get(attr)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return ""
+
+
+def _normalize_meta_value(value: object) -> str:
+    """把 meta content 归一化为普通字符串。"""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def _is_generic_value(value: str) -> bool:
+    """判断是否是常见空值或通用值。"""
+    normalized = (value or "").strip().lower()
+    return not normalized or normalized in GENERIC_META_VALUES or len(normalized) <= 2

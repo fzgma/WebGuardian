@@ -4,19 +4,39 @@ from typing import Any
 
 import streamlit as st
 
+from utils.result_composer import build_result_view_model
+
 
 def render_scan_result(result: dict[str, Any]) -> None:
     """渲染扫描结果。"""
+    view_model = build_result_view_model(result)
+    overview = view_model["overview"]
+    target = view_model["target"]
+    sections = view_model["sections"]
+    messages = view_model["messages"]
+    https_check = sections["https"]
+    tls_check = sections["tls"]
+    dns_check = sections["dns_security"]
+    headers_check = sections["security_headers"]
+    methods_check = sections["http_methods"]
+    paths_check = sections["sensitive_paths"]
+    info_leak = sections["info_leak"]
+    page_scan = sections["page_scan"]
+
     st.subheader("检测结果概览")
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("安全评分", f"{result['score']}/100")
-    col2.metric("安全等级", result["level"])
-    col3.metric("HTTPS", "是" if result["https"] is True else "否")
-    elapsed_seconds = result.get("elapsed_seconds")
+    col1.metric("安全评分", f"{overview.get('score', 0)}/100")
+    col2.metric("安全等级", overview.get("level", "未知"))
+    if https_check.get("enabled") is not True:
+        https_label = "未检测"
+    else:
+        https_label = "是" if https_check.get("value") is True else "否"
+    col3.metric("HTTPS", https_label)
+    elapsed_seconds = overview.get("elapsed_seconds")
     col4.metric("检测耗时", _format_elapsed_seconds(elapsed_seconds))
 
-    page_summary = result.get("page_scan_summary", {})
+    page_summary = overview.get("page_scan", {})
     if page_summary.get("enabled"):
         risk_counts = page_summary.get("risk_counts", {})
         st.caption(
@@ -28,9 +48,9 @@ def render_scan_result(result: dict[str, Any]) -> None:
 
     st.divider()
     st.subheader("基础信息")
-    st.write("检测地址：", result["url"])
-    st.write("主机名称：", result["host"])
-    resolved_ips = result.get("resolved_ips", [])
+    st.write("检测地址：", target.get("url", ""))
+    st.write("主机名称：", target.get("host", ""))
+    resolved_ips = target.get("resolved_ips", [])
     if resolved_ips:
         # 摘要只保留一个 IPv4 和一个 IPv6。
         ipv4, ipv6 = _split_resolved_ips(resolved_ips)
@@ -52,50 +72,52 @@ def render_scan_result(result: dict[str, Any]) -> None:
 
     st.divider()
     st.subheader("TLS/SSL 检测")
-    if result["ssl_valid"] is None:
+    if tls_check.get("enabled") is not True:
         st.info("SSL 检测已关闭。")
     else:
-        st.write("SSL 证书有效：", "是" if result["ssl_valid"] else "否")
+        ssl_valid = tls_check.get("ssl_valid")
+        st.write("SSL 证书有效：", "是" if ssl_valid else "否")
 
-    if result["ssl_valid"]:
-        st.write("证书剩余天数：", result["ssl_days_left"])
-    elif result["ssl_valid"] is False:
+    if tls_check.get("ssl_valid"):
+        st.write("证书剩余天数：", tls_check.get("ssl_days_left"))
+    elif tls_check.get("ssl_valid") is False:
         st.warning("未检测到有效的 SSL 证书，或证书检测失败。")
 
-    _render_tls_details(result.get("tls", {}))
+    _render_tls_details(tls_check)
 
     st.divider()
-    _render_dns_security(result.get("dns_security"))
+    _render_dns_security(dns_check)
 
     st.divider()
     st.subheader("HTTP 安全头检测")
-    if result["security_header_score"] is None:
+    if headers_check.get("enabled") is not True:
         st.info("安全响应头检测已关闭。")
     else:
-        st.write("安全头得分：", result["security_header_score"])
+        st.write("安全头得分：", headers_check.get("score", 0))
 
-    if result["missing_security_headers"]:
+    missing_headers = headers_check.get("missing", [])
+    if missing_headers:
         st.warning("存在缺失的安全响应头：")
-        st.code("\n".join(result["missing_security_headers"]))
-    elif result["missing_security_headers"] == []:
+        st.code("\n".join(missing_headers))
+    elif headers_check.get("enabled") is True:
         st.success("未发现缺失的安全响应头。")
 
     st.divider()
-    _render_http_methods(result)
+    _render_http_methods(methods_check)
 
     st.divider()
     st.subheader("敏感路径检测")
-    if result["sensitive_paths"]:
-        st.warning("发现可能存在的敏感路径：")
-        st.code("\n".join(result["sensitive_paths"]))
-    elif result["sensitive_paths"] == []:
-        st.success("未发现常见敏感路径。")
-    else:
+    sensitive_paths = paths_check.get("paths", [])
+    if paths_check.get("enabled") is not True:
         st.info("敏感路径检测已关闭。")
+    elif sensitive_paths:
+        st.warning("发现可能存在的敏感路径：")
+        st.code("\n".join(sensitive_paths))
+    else:
+        st.success("未发现常见敏感路径。")
 
     st.divider()
     st.subheader("暴露信息检测")
-    info_leak = result.get("info_leak", {})
     _render_exposure_status(
         info_leak.get("version_exposed"),
         "响应头中存在可识别的服务器版本特征。",
@@ -116,14 +138,14 @@ def render_scan_result(result: dict[str, Any]) -> None:
     )
     _render_info_leak_details(info_leak)
 
-    _render_page_scan(result.get("page_scan"))
+    _render_page_scan(page_scan)
     st.divider()
-    _render_sitecheck(result.get("page_scan", {}).get("sitecheck") if result.get("page_scan") else None)
-    _render_errors(result.get("errors", []))
+    _render_sitecheck(page_scan.get("sitecheck") if page_scan else None)
+    _render_messages(messages["errors"], messages["warnings"])
 
     st.divider()
     with st.expander("查看原始检测结果"):
-        st.json(result)
+        st.json(view_model["raw"])
 
 
 def _render_exposure_status(
@@ -138,11 +160,11 @@ def _render_exposure_status(
         st.info(disabled)
 
 
-def _render_http_methods(result: dict[str, Any]) -> None:
+def _render_http_methods(method_info: dict[str, Any] | None) -> None:
     """展示 HTTP 方法检测结果。"""
     st.subheader("HTTP 方法检测")
-    method_info = result.get("http_methods", {})
-    if method_info.get("enabled") is None:
+    method_info = method_info or {}
+    if method_info.get("enabled") is not True:
         st.info("HTTP 方法检测已关闭。")
         return
 
@@ -171,7 +193,7 @@ def _render_http_methods(result: dict[str, Any]) -> None:
 def _render_dns_security(dns_security: dict[str, Any] | None) -> None:
     """展示 DNS 安全检测结果。"""
     st.subheader("DNS 安全检测")
-    if not dns_security or dns_security.get("enabled") is None:
+    if not dns_security or dns_security.get("enabled") is not True:
         st.info("DNS 安全检测已关闭。")
         return
 
@@ -207,7 +229,7 @@ def _render_dns_security(dns_security: dict[str, Any] | None) -> None:
 
 def _render_tls_details(tls_info: dict[str, Any] | None) -> None:
     """展示 TLS 配置详情。"""
-    if not tls_info or tls_info.get("enabled") is None:
+    if not tls_info or tls_info.get("enabled") is not True:
         return
 
     if tls_info.get("warnings"):
@@ -581,16 +603,21 @@ def _render_page_scan(page_scan: dict[str, Any] | None) -> None:
         )
 
 
-def _render_errors(errors: list[str]) -> None:
-    """展示检测过程中的异常提示。"""
-    if not errors:
+def _render_messages(errors: list[str], warnings: list[str]) -> None:
+    """展示聚合后的检测错误和警告。"""
+    if not errors and not warnings:
         return
 
     st.divider()
     st.subheader("检测过程提示")
-    st.warning("部分检测项执行异常，结果可能不完整：")
-    for error in errors:
-        st.write(f"- {error}")
+    if errors:
+        st.warning("部分检测项执行异常，结果可能不完整：")
+        for error in errors:
+            st.write(f"- {error}")
+    if warnings:
+        st.info("检测过程中产生以下提示：")
+        for warning in warnings:
+            st.write(f"- {warning}")
 
 
 def _render_page_finding_item(idx: int, finding: dict[str, Any]) -> None:
