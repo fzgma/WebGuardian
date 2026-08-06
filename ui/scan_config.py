@@ -55,7 +55,12 @@ def render_scan_config() -> ScanOptions:
     if profile == "自定义模式":
         st.caption("当前为自定义模式，可以手动调整下方选项。")
 
-    return ScanOptions.from_dict({key: st.session_state[key] for key in _SCAN_OPTION_KEYS})
+    return collect_scan_options()
+
+
+def collect_scan_options() -> ScanOptions:
+    """从当前会话状态构造扫描配置快照。"""
+    return ScanOptions.from_dict({key: st.session_state.get(key) for key in _SCAN_OPTION_KEYS})
 
 
 def validate_scan_options(options: ScanOptions) -> str | None:

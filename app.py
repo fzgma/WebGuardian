@@ -1,9 +1,8 @@
 import streamlit as st
 
-from scanner.options import ScanOptions
 from utils.net import validate_input_url
 from ui.scan_runtime import get_scan_runtime, render_scan_runtime, start_scan
-from ui.scan_config import render_scan_config, validate_scan_options
+from ui.scan_config import collect_scan_options, render_scan_config, validate_scan_options
 
 
 def run_app():
@@ -17,14 +16,14 @@ def run_app():
     st.title("WebGuardian 网站安全检测工具")
     st.caption("输入网站地址后开始检测。")
 
-    options = render_scan_config()
-    render_scan_form(options)
+    render_scan_config()
+    render_scan_form()
 
     render_scan_runtime()
 
 
 @st.fragment(run_every=0.5)
-def render_scan_form(options: ScanOptions) -> None:
+def render_scan_form() -> None:
     """渲染扫描表单并跟随运行态刷新按钮。"""
     runtime = get_scan_runtime()
     running = runtime.is_running()
@@ -47,9 +46,6 @@ def render_scan_form(options: ScanOptions) -> None:
     if not submitted:
         return
 
-    if running:
-        st.warning("检测正在进行中，请先停止当前任务或等待完成。")
-        return
 
     if not url.strip():
         st.warning("请先输入网站地址。")
@@ -60,17 +56,16 @@ def render_scan_form(options: ScanOptions) -> None:
         st.warning(url_error)
         return
 
-    runtime.clear_previous_result()
-
+    options = collect_scan_options()
     validation_error = validate_scan_options(options)
     if validation_error:
         st.warning(validation_error)
         return
 
+    runtime.clear_previous_result()
+
     if start_scan(url, options):
         st.rerun(scope="fragment")
-    else:
-        st.warning("检测正在进行中，请先停止当前任务或等待完成。")
 
 
 if __name__ == "__main__":

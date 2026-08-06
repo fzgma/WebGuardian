@@ -28,10 +28,7 @@ def render_scan_result(result: dict[str, Any]) -> None:
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("安全评分", f"{overview.get('score', 0)}/100")
     col2.metric("安全等级", overview.get("level", "未知"))
-    if https_check.get("enabled") is not True:
-        https_label = "未检测"
-    else:
-        https_label = "是" if https_check.get("value") is True else "否"
+    https_label = _format_https_label(https_check, tls_check)
     col3.metric("HTTPS", https_label)
     elapsed_seconds = overview.get("elapsed_seconds")
     col4.metric("检测耗时", _format_elapsed_seconds(elapsed_seconds))
@@ -158,6 +155,21 @@ def _render_exposure_status(
         st.success(success)
     else:
         st.info(disabled)
+
+
+def _format_https_label(https_check: dict[str, Any], tls_check: dict[str, Any]) -> str:
+    """根据 HTTPS 或 TLS 结果显示概览中的 HTTPS 状态。"""
+    if https_check.get("enabled") is True:
+        return "是" if https_check.get("value") is True else "否"
+
+    if tls_check.get("enabled") is True:
+        ssl_valid = tls_check.get("ssl_valid")
+        if ssl_valid is True:
+            return "是"
+        if ssl_valid is False:
+            return "否"
+
+    return "未检测"
 
 
 def _render_http_methods(method_info: dict[str, Any] | None) -> None:
