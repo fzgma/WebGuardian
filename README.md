@@ -159,13 +159,31 @@ streamlit run app.py
 
 `main.py` 已包含 Streamlit 启动逻辑。也可以用传统方式`streamlit run `启动成功后，终端会显示本地访问地址，默认通常为 `http://localhost:8501`。
 
+### 5. 使用 Docker 镜像
+
+如果希望使用Docker：
+
+```bash
+docker pull ghcr.io/fzgma/webguardian:latest
+docker run --rm -p 8501:8501 ghcr.io/fzgma/webguardian:latest
+```
+
+如果镜像已经在本地，也可以直接运行：
+
+```bash
+docker run --rm -p 8501:8501 ghcr.io/fzgma/webguardian:latest
+```
+
+启动后访问 `http://localhost:8501` 即可。
+
 ## 五、使用方式
 
 1. 选择预设扫描模式，或进入自定义模式。
 2. 需要页面级检查时，启用该开关并至少选择一个页面子项。
 3. 输入网站地址，例如 `https://example.com`。
-4. 按 Enter 或点击“开始检测”。
-5. 查看安全评分、基础检测结果、页面级风险、过程提示和原始 JSON 数据，必要时可在检测中停止任务。
+4. 如果使用 Docker 运行，先启动容器，再在浏览器访问容器暴露的地址。
+5. 按 Enter 或点击“开始检测”。
+6. 查看安全评分、基础检测结果、页面级风险、过程提示和原始 JSON 数据，必要时可在检测中停止任务。
 
 如果输入地址无效，界面会直接提示具体原因，不会开始扫描。
 

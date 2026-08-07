@@ -46,7 +46,6 @@ def render_scan_form() -> None:
     if not submitted:
         return
 
-
     if not url.strip():
         st.warning("请先输入网站地址。")
         return

@@ -35,7 +35,9 @@ class ScanRuntime:
     def is_running(self) -> bool:
         """判断扫描是否仍在运行。"""
         with self.lock:
-            return self.status == "running" and self.thread is not None and self.thread.is_alive()
+            return (self.status == "running" 
+                    and self.thread is not None 
+                    and self.thread.is_alive())
 
     def start(self, url: str, options: ScanOptions) -> bool:
         """启动后台扫描任务。"""

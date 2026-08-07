@@ -1,0 +1,9 @@
+.venv
+__pycache__
+*.pyc
+.git
+.idea
+.vscode
+*.build
+*.dist
+.github/

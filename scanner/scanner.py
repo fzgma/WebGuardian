@@ -57,7 +57,7 @@ def resolve_host_ips(host: str) -> List[str]:
     for info in infos:
         address = info[4][0]
         if address not in ips:
-            ips.append(address)
+            ips.append(address) # type: ignore
     return ips
 
 
