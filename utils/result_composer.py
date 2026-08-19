@@ -69,6 +69,7 @@ def build_result_view_model(result: Mapping[str, Any]) -> dict[str, Any]:
         target = {}
 
     section_names = (
+        "availability",
         "https",
         "tls",
         "dns_security",

@@ -11,6 +11,10 @@ from utils.control import check_stop
 from utils.result_composer import wrap_section_result
 
 
+DNS_RESOLVER_TIMEOUT = 1.0
+DNS_RESOLVER_LIFETIME = 1.5
+
+
 def run_dns_check(context: Any) -> dict[str, Any]:
     """执行 DNS 安全检测并返回标准 section。"""
     if not context.scan_options.check_dns_security:
@@ -23,8 +27,13 @@ def run_dns_check(context: Any) -> dict[str, Any]:
         )
 
     check_stop(context.stop_event)
-    dns_result = _detect_dns_security(context.host, stop_event=context.stop_event)
-    context.progress.update("正在检测 DNS 安全配置", 1)
+    context.progress.update("正在检测 DNS 安全配置（SPF / DMARC / CAA）")
+    dns_result = _detect_dns_security(
+        context.host,
+        stop_event=context.stop_event,
+        progress=context.progress,
+    )
+    context.progress.update("DNS 安全检测完成", 1)
     return wrap_section_result(
         "dns_security",
         dns_result,
@@ -50,7 +59,7 @@ def _disabled_result(host: str = "") -> Dict[str, Any]:
     }
 
 
-def _detect_dns_security(host: str, stop_event=None) -> Dict[str, Any]:
+def _detect_dns_security(host: str, stop_event=None, progress=None) -> Dict[str, Any]:
     """检测域名的 SPF、DMARC 和 CAA 配置。"""
     result: Dict[str, Any] = {
         "enabled": True,
@@ -79,8 +88,8 @@ def _detect_dns_security(host: str, stop_event=None) -> Dict[str, Any]:
         return result
 
     resolver = dns.resolver.Resolver(configure=True)
-    resolver.timeout = 3.0
-    resolver.lifetime = 4.0
+    resolver.timeout = DNS_RESOLVER_TIMEOUT
+    resolver.lifetime = DNS_RESOLVER_LIFETIME
 
     lookup_candidates = _dns_lookup_candidates(host)
     lookup_domain = lookup_candidates[0]
@@ -91,21 +100,31 @@ def _detect_dns_security(host: str, stop_event=None) -> Dict[str, Any]:
 
     for candidate in lookup_candidates:
         check_stop(stop_event)
+        if progress is not None:
+            progress.update(f"正在查询 SPF 记录：{candidate}")
         spf_records, spf_errors = _lookup_txt_records(resolver, candidate)
+        if progress is not None:
+            progress.update(f"正在查询 DMARC 记录：{candidate}")
         dmarc_records, dmarc_errors = _lookup_txt_records(
             resolver,
             f"_dmarc.{candidate}",
         )
+        if progress is not None:
+            progress.update(f"正在查询 CAA 记录：{candidate}")
         caa_records, caa_errors = _lookup_caa_records(resolver, candidate)
         result["warnings"].extend(spf_errors + dmarc_errors + caa_errors)
 
         if spf_errors or dmarc_errors or caa_errors:
             had_query_error = True
 
-        if spf_records or dmarc_records or (
-            caa_records and caa_records.get("records")
-        ):
+        has_records = bool(
+            spf_records or dmarc_records or (caa_records and caa_records.get("records"))
+        )
+        if has_records:
             lookup_domain = candidate
+            break
+
+        if spf_errors or dmarc_errors or caa_errors:
             break
 
     result["lookup_domain"] = lookup_domain
@@ -192,11 +211,11 @@ def _dns_lookup_candidates(host: str) -> List[str]:
     normalized = (host or "").strip().rstrip(".").lower()
     candidates: List[str] = []
     if normalized:
-        candidates.append(normalized)
         if normalized.startswith("www."):
             stripped = normalized[4:]
             if stripped and stripped not in candidates:
                 candidates.append(stripped)
+        candidates.append(normalized)
     return candidates
 
 
@@ -209,7 +228,7 @@ def _lookup_txt_records(
     """查询 TXT 记录。"""
     check_stop(stop_event)
     try:
-        answers = resolver.resolve(name, "TXT")
+        answers = resolver.resolve(name, "TXT", search=False)
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
         return [], []
     except dns.exception.DNSException as exc:
@@ -232,7 +251,7 @@ def _lookup_caa_records(
     """查询 CAA 记录。"""
     check_stop(stop_event)
     try:
-        answers = resolver.resolve(name, "CAA")
+        answers = resolver.resolve(name, "CAA", search=False)
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
         return None, []
     except dns.exception.DNSException as exc:

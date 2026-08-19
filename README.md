@@ -10,7 +10,7 @@
 
 ## 项目说明
 
-WebGuardian 是一个基于 Python 和 Streamlit 开发的网站基础安全检测工具。输入目标网站地址后，工具会执行可配置的基础站点检测、DNS 安全检查和页面级安全检查，并输出安全评分、安全等级、风险提示、检测耗时和原始检测数据。
+WebGuardian 是一个基于 Python 和 Streamlit 开发的网站基础安全检测工具。输入目标网站地址后，工具会执行可配置的基础站点检测、DNS 安全检查和页面级安全检查，并输出安全评分、安全等级、风险提示、检测耗时、本次扫描过程中的基础可用性指标和原始检测数据。
 
 项目定位为轻量的安全基线检查工具，不替代专业漏洞扫描、渗透测试或持续安全监测。
 
@@ -25,6 +25,10 @@ WebGuardian 是一个基于 Python 和 Streamlit 开发的网站基础安全检�
 ### 2. SSL/TLS 证书检测
 
 检测 HTTPS 连接是否有效，并显示证书剩余有效天数。
+
+### 网站可用性观测
+
+在本次正式请求上记录 `DNS` 解析、`TCP` 连接、`TLS` 握手、`TTFB` 和发送/接收总量，并在结果页的折叠区展示，便于查看基础响应情况。不进行并发请求或压力测试。
 
 ### 3. HTTP 安全响应头检测
 
@@ -98,6 +102,7 @@ scanner/
     sitecheck/             # robots.txt / sitemap.xml 暴露面分析
 utils/
   control.py               # 扫描中断信号
+  availability.py          # 单次正式请求的可用性指标采集
   net.py                   # 请求会话、URL 校验和地址规范化
   result_composer.py       # 小结果包装、大结果合成和展示模型转换
   scan_progress.py         # 按工作量计算扫描进度
@@ -183,7 +188,7 @@ docker run --rm -p 8501:8501 ghcr.io/fzgma/webguardian:latest
 3. 输入网站地址，例如 `https://example.com`。
 4. 如果使用 Docker 运行，先启动容器，再在浏览器访问容器暴露的地址。
 5. 按 Enter 或点击“开始检测”。
-6. 查看安全评分、基础检测结果、页面级风险、过程提示和原始 JSON 数据，必要时可在检测中停止任务。
+6. 查看安全评分、基础检测结果、网站可用性、页面级风险、过程提示和原始 JSON 数据，必要时可在检测中停止任务。
 
 如果输入地址无效，界面会直接提示具体原因，不会开始扫描。
 
@@ -195,9 +200,9 @@ docker run --rm -p 8501:8501 ghcr.io/fzgma/webguardian:latest
 扫描结果采用“模块小结果 -> 统一大结果 -> 展示模型”的分层结构：
 
 1. `scanner/scanner.py` 创建一次扫描的 `ScanContext`，保存目标地址、会话、扫描配置、进度和停止信号等运行态信息。
-2. HTTPS、TLS、DNS、安全响应头、HTTP 方法、敏感路径、信息泄露和页面扫描分别生成独立的 section result。
-3. `utils/result_composer.py` 统一包装和合成结果，聚合各模块的 `warnings`、`findings` 和错误，并生成评分、等级、耗时和页面扫描摘要。
-4. `ui/result_view.py` 通过 `build_result_view_model()` 将大结果转换为展示层模型，再按模块渲染，避免 UI 直接依赖扫描编排细节。
+2. HTTPS、网站可用性、TLS、DNS、安全响应头、HTTP 方法、敏感路径、信息泄露和页面扫描分别生成独立的 section result。
+3. `utils/result_composer.py` 统一包装和合成结果，聚合各模块的 `warnings`、`findings` 和错误，并生成评分、等级、耗时、页面扫描摘要和可用性展示数据。
+4. `ui/result_view.py` 通过 `build_result_view_model()` 将大结果转换为展示层模型，再按模块渲染，避免 UI 直接依赖扫描编排细节；网站可用性会在基础信息下方折叠展示。
 
 成功扫描结果的顶层结构如下：
 

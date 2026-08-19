@@ -15,6 +15,7 @@ def render_scan_result(result: dict[str, Any]) -> None:
     sections = view_model["sections"]
     messages = view_model["messages"]
     https_check = sections["https"]
+    availability_check = sections["availability"]
     tls_check = sections["tls"]
     dns_check = sections["dns_security"]
     headers_check = sections["security_headers"]
@@ -66,6 +67,9 @@ def render_scan_result(result: dict[str, Any]) -> None:
             else:
                 # 只有一种地址族时，保持单栏列表。
                 st.table([{"IP": ip} for ip in resolved_ips])
+
+
+    _render_availability(availability_check)
 
     st.divider()
     st.subheader("TLS/SSL 检测")
@@ -170,6 +174,31 @@ def _format_https_label(https_check: dict[str, Any], tls_check: dict[str, Any]) 
             return "否"
 
     return "未检测"
+
+
+def _render_availability(availability: dict[str, Any] | None) -> None:
+    """展示本次扫描的基础可用性指标。"""
+    with st.expander("网站可用性", expanded=False):
+        if not availability or availability.get("enabled") is not True:
+            st.info("网站可用性数据未记录。")
+            return
+
+        st.caption("仅展示本次正式请求的基础响应情况。")
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("DNS 解析", _format_duration_ms(availability.get("dns_seconds")))
+        col2.metric(
+            "TCP 连接耗时",
+            _format_duration_ms(availability.get("tcp_connect_seconds")),
+        )
+        col3.metric(
+            "TLS 握手耗时",
+            _format_duration_ms(availability.get("tls_handshake_seconds")),
+        )
+
+        col4, col5 = st.columns(2)
+        col4.metric("TTFB", _format_duration_ms(availability.get("ttfb_seconds")))
+        col5.metric("发送/接收总量", _format_kb(availability.get("total_bytes")))
 
 
 def _render_http_methods(method_info: dict[str, Any] | None) -> None:
@@ -370,6 +399,32 @@ def _format_elapsed_seconds(value: Any) -> str:
     if seconds < 0:
         return "未知"
     return f"{seconds:.2f} 秒"
+
+
+def _format_duration_ms(value: Any) -> str:
+    """把秒格式化成毫秒。"""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    if seconds < 0:
+        return "N/A"
+    return f"{seconds * 1000:.0f} ms"
+
+
+def _format_kb(value: Any) -> str:
+    """把字节数格式化成 KB。"""
+    try:
+        bytes_value = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    if bytes_value < 0:
+        return "N/A"
+
+    kb = bytes_value / 1024
+    if kb < 10:
+        return f"{kb:.1f} KB"
+    return f"{kb:.0f} KB"
 
 
 def _format_tls_dn_summary(value: Any) -> str:

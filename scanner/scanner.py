@@ -13,7 +13,14 @@ from scanner.basescan import (
     run_tls_check,
 )
 from utils.control import check_stop
-from utils.net import http_request, make_session, normalize_url, validate_input_url
+from utils.availability import build_availability_result
+from utils.net import (
+    http_request,
+    make_availability_session,
+    make_session,
+    normalize_url,
+    validate_input_url,
+)
 from utils.result_composer import (
     build_target_result,
     compose_scan_error,
@@ -105,28 +112,48 @@ def _create_scan_context(
 
 
 def _request_target(
-    session: requests.Session,
     normalized_url: str,
     progress: ScanProgress,
-) -> Tuple[requests.Response | None, Dict[str, Any] | None]:
+) -> Tuple[requests.Response | None, Dict[str, Any] | None, Dict[str, Any] | None]:
     """请求目标站点并统一处理错误。"""
     progress.update("正在请求目标站点")
+    request_timer = Timer()
+    session = make_availability_session()
     try:
-        response = http_request(
-            session,
-            "GET",
-            normalized_url,
-            stream=True,
-            raise_for_status=True,
-        )
-    except requests.HTTPError as exc:
-        code = exc.response.status_code if exc.response is not None else "未知"
-        return None, {"ok": False, "error": f"目标站点返回异常状态码：{code}"}
-    except Exception as exc:
-        return None, {"ok": False, "error": f"无法访问站点：{exc}"}
+        try:
+            response = http_request(
+                session,
+                "GET",
+                normalized_url,
+                stream=True,
+                raise_for_status=True,
+            )
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else "未知"
+            return None, {"ok": False, "error": f"目标站点返回异常状态码：{code}"}, None
+        except Exception as exc:
+            return None, {"ok": False, "error": f"无法访问站点：{exc}"}, None
 
-    progress.update("目标站点请求完成", 1)
-    return response, None
+        availability_timings: dict[str, float] = {}
+        raw = getattr(response, "raw", None)
+        connection = getattr(raw, "_connection", None)
+        if connection is not None:
+            timings = getattr(connection, "_availability_timings", None)
+            if isinstance(timings, dict):
+                availability_timings = dict(timings)
+
+        # 读取响应体，确保总耗时和响应大小是本次正式请求的真实结果。
+        _ = response.content
+        availability = build_availability_result(
+            response,
+            total_seconds=round(request_timer.elapsed_seconds(), 6),
+            timings=availability_timings,
+        )
+
+        progress.update("目标站点请求完成", 1)
+        return response, None, availability
+    finally:
+        session.close()
 
 
 def _empty_page_scan_result() -> Dict[str, Any]:
@@ -187,8 +214,7 @@ def scan(
         context.host,
         context.resolved_ips,
     )
-    response, error = _request_target(
-        context.session,
+    response, error, availability = _request_target(
         context.normalized_url,
         context.progress,
     )
@@ -205,6 +231,16 @@ def scan(
 
     check_stop(context.stop_event)
     checks = run_base_checks(context, response)
+    checks = {
+        "availability": wrap_section_result(
+            "availability",
+            availability or {},
+            enabled=True,
+            status="ok",
+            summary="网站可用性观测完成。",
+        ),
+        **checks,
+    }
     checks["tls"] = run_tls_check(context, response)
     checks["dns_security"] = run_dns_check(context)
 

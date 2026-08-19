@@ -6,6 +6,8 @@ import unicodedata
 
 import requests
 
+from utils.availability import AvailabilityAdapter
+
 
 DEFAULT_TIMEOUT = 5
 # 尽量模拟普通浏览器的导航请求头，降低被简单爬虫规则拦截的概率。
@@ -125,6 +127,15 @@ def make_session() -> requests.Session:
     """创建带默认请求头的会话。"""
     session = requests.Session()
     session.headers.update(DEFAULT_HEADERS)
+    return session
+
+
+def make_availability_session() -> requests.Session:
+    """创建仅用于可用性采集的会话。"""
+    session = requests.Session()
+    session.headers.update(DEFAULT_HEADERS)
+    session.mount("http://", AvailabilityAdapter())
+    session.mount("https://", AvailabilityAdapter())
     return session
 
 
