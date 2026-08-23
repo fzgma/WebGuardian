@@ -9,9 +9,9 @@ import dns.exception
 import dns.resolver
 
 from utils.control import check_stop
-from ui.result.composer import wrap_section_result
-from ui.result.models import ScanContext, SectionResult, SectionStatus
-from utils.scan_progress import ScanProgress
+from result_model.composer import wrap_section_result
+from result_model.models import ScanContext, SectionResult, SectionStatus
+from runtime.scan_progress import ScanProgress
 
 
 DNS_RESOLVER_TIMEOUT = 1.0
@@ -36,7 +36,7 @@ def run_dns_check(context: ScanContext) -> SectionResult:
         stop_event=context.stop_event,
         progress=context.progress,
     )
-    context.progress.update("DNS 安全检测完成", 1)
+    context.progress.update("DNS 安全检测完成")
     return wrap_section_result(
         "dns_security",
         dns_result,
@@ -111,14 +111,18 @@ def _detect_dns_security(
             progress.update(f"正在查询 SPF 记录：{candidate}")
         spf_records, spf_errors = _lookup_txt_records(resolver, candidate)
         if progress is not None:
+            progress.update(f"SPF 查询完成：{candidate}", 1)
             progress.update(f"正在查询 DMARC 记录：{candidate}")
         dmarc_records, dmarc_errors = _lookup_txt_records(
             resolver,
             f"_dmarc.{candidate}",
         )
         if progress is not None:
+            progress.update(f"DMARC 查询完成：{candidate}", 1)
             progress.update(f"正在查询 CAA 记录：{candidate}")
         caa_records, caa_errors = _lookup_caa_records(resolver, candidate)
+        if progress is not None:
+            progress.update(f"CAA 查询完成：{candidate}", 1)
         result["warnings"].extend(spf_errors + dmarc_errors + caa_errors)
 
         if spf_errors or dmarc_errors or caa_errors:

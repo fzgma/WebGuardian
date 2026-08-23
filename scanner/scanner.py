@@ -14,7 +14,7 @@ from scanner.basescan import (
     run_tls_check,
 )
 from utils.control import check_stop
-from utils.availability import build_availability_result
+from scanner.basescan.availability import build_availability_result
 from utils.net import (
     http_request,
     make_availability_session,
@@ -22,18 +22,25 @@ from utils.net import (
     normalize_url,
     validate_input_url,
 )
-from ui.result.composer import (
+from result_model.composer import (
     build_target_result,
     compose_scan_error,
     compose_scan_result,
     wrap_section_result,
 )
-from ui.result.models import JsonObject, ScanContext, ScanResult, SectionResult, SectionStatus
+from result_model.models import (
+    JsonObject,
+    ScanContext,
+    ScanResult,
+    SectionResult,
+    SectionStatus,
+    TargetResult,
+)
 from utils.timer import Timer
 from .options import ScanOptions
 from .pagecheck.page_scan import scan_pages
-from utils.scan_progress import ScanProgress
-from utils.security_score import calculate_score
+from runtime.scan_progress import ScanProgress
+from result_model.security_score import calculate_score
 
 
 def resolve_host_ips(host: str) -> List[str]:
@@ -187,6 +194,78 @@ def _run_page_scan(
     return cast(JsonObject, page_scan)
 
 
+def _build_page_scan_section(context: ScanContext) -> SectionResult:
+    """执行页面扫描并包装为统一 section。"""
+    if context.scan_options.check_page_scan:
+        page_scan = _run_page_scan(context)
+        return wrap_section_result(
+            "page_scan",
+            page_scan,
+            enabled=True,
+            status=SectionStatus.OK,
+            summary="页面级安全检查完成。",
+        )
+
+    return wrap_section_result(
+        "page_scan",
+        _empty_page_scan_result(),
+        enabled=False,
+        status=SectionStatus.DISABLED,
+        summary="页面级安全检查未启用。",
+    )
+
+
+def _run_checks(
+    context: ScanContext,
+    response: requests.Response,
+    availability: Dict[str, Any] | None,
+) -> tuple[dict[str, SectionResult], SectionResult]:
+    """执行一次扫描所需的各项检测并返回 section 集合。"""
+    check_stop(context.stop_event)
+    checks = run_base_checks(context, response)
+    checks = {
+        "availability": wrap_section_result(
+            "availability",
+            availability or {},
+            enabled=True,
+            status=SectionStatus.OK,
+            summary="网站可用性观测完成。",
+        ),
+        **checks,
+    }
+    checks["tls"] = run_tls_check(context, response)
+    checks["dns_security"] = run_dns_check(context)
+
+    page_scan = _build_page_scan_section(context)
+    checks["page_scan"] = page_scan
+    return checks, page_scan
+
+
+def _compose_final_result(
+    context: ScanContext,
+    target: TargetResult,
+    checks: dict[str, SectionResult],
+    page_scan: SectionResult,
+    timer: Timer,
+) -> ScanResult:
+    """计算评分并组装最终扫描结果。"""
+    score, level = calculate_score(checks, context.scan_options)
+    final_result = compose_scan_result(
+        target=target,
+        checks=checks,
+        score=score,
+        level=level,
+        elapsed_seconds=round(timer.elapsed_seconds(), 2),
+        page_scan=page_scan,
+        errors=context.errors,
+        warnings=[],
+    )
+
+    check_stop(context.stop_event)
+    context.progress.update("检测完成", 1)
+    return final_result
+
+
 def scan(
     url: str,
     progress_callback: Callable[[int, str], None] | None = None,
@@ -220,53 +299,5 @@ def scan(
             round(timer.elapsed_seconds(), 2),
         )
 
-    check_stop(context.stop_event)
-    checks: dict[str, SectionResult] = run_base_checks(context, response)
-    checks = {
-        "availability": wrap_section_result(
-            "availability",
-            availability or {},
-            enabled=True,
-            status=SectionStatus.OK,
-            summary="网站可用性观测完成。",
-        ),
-        **checks,
-    }
-    checks["tls"] = run_tls_check(context, response)
-    checks["dns_security"] = run_dns_check(context)
-
-    if context.scan_options.check_page_scan:
-        page_scan = _run_page_scan(context)
-        page_scan_model = wrap_section_result(
-            "page_scan",
-            page_scan,
-            enabled=True,
-            status=SectionStatus.OK,
-            summary="页面级安全检查完成。",
-        )
-        checks["page_scan"] = page_scan_model
-    else:
-        page_scan_model = wrap_section_result(
-            "page_scan",
-            _empty_page_scan_result(),
-            enabled=False,
-            status=SectionStatus.DISABLED,
-            summary="页面级安全检查未启用。",
-        )
-        checks["page_scan"] = page_scan_model
-
-    score, level = calculate_score(checks, context.scan_options)
-    final_result = compose_scan_result(
-        target=target,
-        checks=checks,
-        score=score,
-        level=level,
-        elapsed_seconds=round(timer.elapsed_seconds(), 2),
-        page_scan=page_scan_model,
-        errors=context.errors,
-        warnings=[],
-    )
-
-    check_stop(context.stop_event)
-    context.progress.update("检测完成", 1)
-    return final_result
+    checks, page_scan = _run_checks(context, response, availability)
+    return _compose_final_result(context, target, checks, page_scan, timer)

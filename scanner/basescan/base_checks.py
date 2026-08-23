@@ -12,8 +12,8 @@ import requests
 
 from utils.control import check_stop
 from utils.net import http_request
-from ui.result.composer import wrap_section_result
-from ui.result.models import ScanContext, SectionResult, SectionStatus
+from result_model.composer import wrap_section_result
+from result_model.models import ScanContext, SectionResult, SectionStatus
 
 SECURITY_HEADERS = [
     "Content-Security-Policy",

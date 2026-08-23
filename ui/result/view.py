@@ -5,8 +5,8 @@ from typing import Any
 
 import streamlit as st
 
-from ui.result.composer import build_result_view_model
-from ui.result.models import (
+from result_model.composer import build_result_view_model
+from result_model.models import (
     AvailabilityViewData,
     DnsRecordViewData,
     DnsViewData,
@@ -50,13 +50,13 @@ def render_scan_result(result: ScanResult) -> None:
     col4.metric("检测耗时", _format_elapsed_seconds(elapsed_seconds))
 
     page_summary = overview.page_scan
-    if page_summary["enabled"]:
-        risk_counts = page_summary["risk_counts"]
+    if page_summary.enabled:
+        risk_counts = page_summary.risk_counts
         st.caption(
-            f"页面扫描：已检查 {page_summary['pages_scanned']} 页，"
-            f"发现 {page_summary['finding_count']} 个问题，"
+            f"页面扫描：已检查 {page_summary.pages_scanned} 页，"
+            f"发现 {page_summary.finding_count} 个问题，"
             f"高 {risk_counts.get('高', 0)} / 中 {risk_counts.get('中', 0)} / 低 {risk_counts.get('低', 0)}，"
-            f"最高风险 {page_summary['highest_risk']}"
+            f"最高风险 {page_summary.highest_risk}"
         )
 
     st.divider()

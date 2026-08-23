@@ -7,7 +7,7 @@ import streamlit as st
 
 from scanner.options import ScanOptions
 from scanner.scanner import scan
-from ui.result.models import ScanResult
+from result_model.models import ScanResult
 from utils.control import ScanInterrupted
 from utils.timer import Timer
 

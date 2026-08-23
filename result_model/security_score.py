@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 
 from scanner.options import ScanOptions
-from ui.result.models import JsonValue, SectionResult, SectionStatus
+from result_model.models import JsonValue, SectionResult, SectionStatus
 
 _HTTPS_MAX = 10
 _SECURITY_HEADERS_MAX = 30

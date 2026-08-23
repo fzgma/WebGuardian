@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 
-from ui.result.models import ScanResult
+from result_model.models import ScanResult
 
 
 class RunStatus(str, Enum):

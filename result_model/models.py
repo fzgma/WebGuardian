@@ -14,7 +14,7 @@ from urllib.parse import ParseResult
 import requests
 
 from scanner.options import ScanOptions
-from utils.scan_progress import ScanProgress
+from runtime.scan_progress import ScanProgress
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -243,6 +243,7 @@ class RedirectIssueViewData:
 class PageScanViewData:
     """页面扫描 section 的展示数据。"""
 
+    enabled: bool = False
     pages_scanned: int = 0
     max_pages: int = 0
     max_depth: int = 0
@@ -466,8 +467,8 @@ class OverviewViewModel:
     score: int
     level: str
     elapsed_seconds: float | None
-    https: SectionResult
-    page_scan: PageScanSummaryData
+    https: SectionView[bool | None]
+    page_scan: PageScanViewData
 
 
 @dataclass(frozen=True)
@@ -487,8 +488,8 @@ class ScanViewModel:
                 "score": self.overview.score,
                 "level": self.overview.level,
                 "elapsed_seconds": self.overview.elapsed_seconds,
-                "https": self.overview.https.to_dict(),
-                "page_scan": dict(self.overview.page_scan),
+                "https": self.overview.https.result.to_dict(),
+                "page_scan": _page_scan_view_to_dict(self.overview.page_scan),
             },
             "target": self.target.to_dict(),
             "sections": self.sections.to_dict(),
@@ -525,3 +526,93 @@ def finding_view(value: Finding) -> FindingView:
         message=value.get("message", ""),
         suggestion=value.get("suggestion", ""),
     )
+
+
+def _page_scan_view_to_dict(value: PageScanViewData) -> JsonObject:
+    """将页面扫描展示数据转换为 JSON 对象。"""
+    return {
+        "enabled": value.enabled,
+        "pages_scanned": value.pages_scanned,
+        "max_pages": value.max_pages,
+        "max_depth": value.max_depth,
+        "finding_count": value.finding_count,
+        "highest_risk": value.highest_risk,
+        "risk_counts": dict(value.risk_counts),
+        "message": value.message,
+        "sitecheck": (
+            _sitecheck_view_to_dict(value.sitecheck)
+            if value.sitecheck is not None
+            else None
+        ),
+        "redirect_issues": [
+            {
+                "status_code": item.status_code,
+                "from": item.source,
+                "to": item.target,
+            }
+            for item in value.redirect_issues
+        ],
+    }
+
+
+def _sitecheck_view_to_dict(value: SiteCheckViewData) -> JsonObject:
+    """将站点公开入口展示数据转换为 JSON 对象。"""
+    return {
+        "enabled": value.enabled,
+        "status": value.status,
+        "robots_url": value.robots_url,
+        "sitemap_url_count": value.sitemap_url_count,
+        "finding_count": value.finding_count,
+        "seed_url_count": value.seed_url_count,
+        "highest_risk": value.highest_risk,
+        "risk_counts": dict(value.risk_counts),
+        "crawl_policy": _crawl_policy_view_to_dict(value.crawl_policy),
+        "sitemap": _sitemap_view_to_dict(value.sitemap),
+    }
+
+
+def _crawl_policy_view_to_dict(value: CrawlPolicyViewData) -> JsonObject:
+    """将 robots.txt 展示数据转换为 JSON 对象。"""
+    return {
+        "status": value.status,
+        "robots_url": value.robots_url,
+        "allow_paths": list(value.allow_paths),
+        "disallow_paths": list(value.disallow_paths),
+        "sitemap_urls": list(value.sitemap_urls),
+        "findings": [_finding_view_to_dict(item) for item in value.findings],
+        "warnings": list(value.warnings),
+    }
+
+
+def _sitemap_view_to_dict(value: SitemapViewData) -> JsonObject:
+    """将 sitemap.xml 展示数据转换为 JSON 对象。"""
+    return {
+        "status": value.status,
+        "sitemap_count": value.sitemap_count,
+        "url_count": value.url_count,
+        "candidate_urls": list(value.candidate_urls),
+        "candidate_url_count": value.candidate_url_count,
+        "candidate_urls_truncated": value.candidate_urls_truncated,
+        "seed_urls": list(value.seed_urls),
+        "seed_url_count": value.seed_url_count,
+        "seed_urls_truncated": value.seed_urls_truncated,
+        "findings": [_finding_view_to_dict(item) for item in value.findings],
+        "finding_count": value.finding_count,
+        "findings_truncated": value.findings_truncated,
+        "warnings": list(value.warnings),
+    }
+
+
+def _finding_view_to_dict(value: FindingView) -> JsonObject:
+    """将展示层发现项转换为 JSON 对象。"""
+    return {
+        "risk": value.risk,
+        "type": value.type,
+        "field": value.field,
+        "value": value.value,
+        "url": value.url,
+        "source": value.source,
+        "path": value.path,
+        "message": value.message,
+        "suggestion": value.suggestion,
+    }

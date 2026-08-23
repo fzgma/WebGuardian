@@ -1,5 +1,5 @@
 {
-  "include": ["main.py", "app.py", "scanner", "utils", "ui"],
+  "include": ["main.py", "app.py", "scanner", "utils", "ui", "tests", "runtime", "result_model"],
   "exclude": [
     "**/__pycache__",
     ".venv",

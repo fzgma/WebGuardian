@@ -6,7 +6,7 @@ import unicodedata
 
 import requests
 
-from utils.availability import AvailabilityAdapter
+from scanner.basescan.availability import AvailabilityAdapter
 
 
 DEFAULT_TIMEOUT = 5

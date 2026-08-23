@@ -11,8 +11,8 @@ from urllib.parse import urlparse
 from cryptography import x509
 
 from utils.control import check_stop
-from ui.result.composer import wrap_section_result
-from ui.result.models import ScanContext, SectionResult, SectionStatus
+from result_model.composer import wrap_section_result
+from result_model.models import ScanContext, SectionResult, SectionStatus
 
 _TLS_VERSION_SPECS: list[tuple[str, ssl.TLSVersion, str]] = [
     ("TLS 1.0", ssl.TLSVersion.TLSv1, "弱"),

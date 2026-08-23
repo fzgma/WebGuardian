@@ -75,12 +75,13 @@ def _total_work(options: ScanOptions, sensitive_path_count: int) -> int:
         (
             options.check_https,
             options.check_ssl,
-            options.check_dns_security,
             options.check_security_headers,
             options.check_info_leak,
             options.check_trace,
         )
     )
+    if options.check_dns_security:
+        total += 3
     if options.check_sensitive_paths:
         total += sensitive_path_count
     if options.check_page_scan:

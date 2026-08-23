@@ -25,7 +25,7 @@ class ScanOptions:
     page_scan_max_depth: int = 2
 
     @classmethod
-    def from_dict(cls, data: Any = None) -> "ScanOptions": #data是any类型，可能是字典、dataclass实例、其他对象等
+    def from_dict(cls, data: Any = None) -> "ScanOptions":
         """从字典构建扫描配置。"""
         if not data:
             return cls()

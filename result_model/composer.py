@@ -97,15 +97,13 @@ def build_result_view_model(result: ScanResult) -> ScanViewModel:
     """把扫描结果转换成展示层使用的稳定 ViewModel。"""
 
     sections = _build_result_sections(result)
-    page_summary = result.summary.page_scan_summary
-
     return ScanViewModel(
         overview=OverviewViewModel(
             score=result.summary.score if result.summary.score is not None else 0,
             level=result.summary.level,
             elapsed_seconds=result.summary.elapsed_seconds,
-            https=sections.https.result,
-            page_scan=page_summary,
+            https=sections.https,
+            page_scan=sections.page_scan.data,
         ),
         target=result.target,
         sections=sections,
@@ -237,6 +235,7 @@ def _info_leak_data(section: SectionResult) -> InfoLeakViewData:
 def _page_scan_data(section: SectionResult) -> PageScanViewData:
     """转换页面扫描 section。"""
     return PageScanViewData(
+        enabled=section.enabled is True,
         pages_scanned=_int_value(section.value("pages_scanned"), 0) or 0,
         max_pages=_int_value(section.value("max_pages"), 0) or 0,
         max_depth=_int_value(section.value("max_depth"), 0) or 0,

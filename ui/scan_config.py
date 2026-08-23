@@ -53,7 +53,7 @@ def render_scan_config() -> ScanOptions:
     _render_page_scan_options(defaults)
 
     if profile == "自定义模式":
-        st.caption("当前为自定义模式，可以手动调整下方选项。")
+        st.caption("当前为自定义模式，可以手动调整上方选项。")
 
     return collect_scan_options()
 
