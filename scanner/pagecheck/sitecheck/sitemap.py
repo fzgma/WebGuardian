@@ -2,7 +2,8 @@
 
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Set
+from threading import Event
+from typing import Any, Dict, List, Set, TypedDict
 from urllib.parse import urljoin, urlparse
 import xml.etree.ElementTree as ET
 
@@ -17,12 +18,19 @@ _MAX_EXPORTED_URLS = 10
 _MAX_EXPORTED_FINDINGS = 10
 
 
+class FindingState(TypedDict):
+    """保存 sitemap 发现项的累计状态。"""
+
+    count: int
+    highest_risk: str
+
+
 def scan_sitemap(
     session: requests.Session,
     start_url: str,
     sitemap_urls: List[str] | None = None,
     *,
-    stop_event=None,
+    stop_event: Event | None = None,
 ) -> Dict[str, Any]:
     """解析 sitemap.xml 并抽取可继续分析的页面入口。"""
     candidates = _unique_urls(sitemap_urls or [urljoin(start_url, "/sitemap.xml")])
@@ -52,7 +60,7 @@ def scan_sitemap(
     discovered_seen: Set[str] = set()
     seed_seen: Set[str] = set()
     lastmods: List[datetime] = []
-    finding_state = {
+    finding_state: FindingState = {
         "count": 0,
         "highest_risk": "无",
     }
@@ -119,7 +127,7 @@ def _scan_document(
     visited: Set[str],
     documents: List[Dict[str, Any]],
     findings: List[Dict[str, Any]],
-    finding_state: Dict[str, Any],
+    finding_state: FindingState,
     warnings: List[str],
     discovered_urls: List[str],
     discovered_seen: Set[str],
@@ -127,7 +135,7 @@ def _scan_document(
     seed_seen: Set[str],
     lastmods: List[datetime],
     depth: int,
-    stop_event=None,
+    stop_event: Event | None = None,
 ) -> None:
     """递归解析单个 sitemap 文件。"""
     if len(visited) >= _MAX_SITEMAP_DOCS:
@@ -340,7 +348,7 @@ def _add_entry_findings(
     label: str,
     same_site_message: str,
     cross_site_message: str,
-    finding_state: Dict[str, Any],
+    finding_state: FindingState,
 ) -> None:
     """补充 sitemap 条目的暴露面提示。"""
     parsed = urlparse(target_url)
@@ -426,7 +434,7 @@ def _append_limited(items: List[str], value: str) -> bool:
 
 def _record_finding(
     findings: List[Dict[str, Any]],
-    finding_state: Dict[str, Any],
+    finding_state: FindingState,
     finding: Dict[str, Any],
 ) -> None:
     """记录发现并控制导出样本数量。"""

@@ -6,7 +6,7 @@ import sys
 import threading
 import warnings
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import requests
 import urllib3.connection as urllib3_connection
@@ -32,9 +32,10 @@ class AvailabilityTimingMixin:
     _availability_timings: dict[str, float]
 
     def _availability_bucket(self: Any) -> dict[str, float]:
+        """获取或初始化当前连接的可用性计时容器。"""
         bucket = getattr(self, "_availability_timings", None)
         if isinstance(bucket, dict):
-            return bucket
+            return cast(dict[str, float], bucket)
         bucket = cast(dict[str, float], {})
         self._availability_timings = bucket
         return bucket
@@ -59,7 +60,7 @@ class AvailabilityTimingMixin:
             err: OSError | None = None
             tcp_seconds = 0.0
             for res in addresses:
-                af, socktype, proto, canonname, sa = res
+                af, socktype, proto, _canonname, sa = res
                 sock: socket.socket | None = None
                 attempt_timer = Timer()
                 try:
@@ -175,7 +176,11 @@ class AvailabilityHTTPSConnection(AvailabilityTimingMixin, HTTPSConnection):
 
             server_hostname_rm_dot = server_hostname.rstrip(".")
             handshake_timer = Timer()
-            sock_and_verified = urllib3_connection._ssl_wrap_socket_and_match_hostname(
+            ssl_wrap = cast(
+                Callable[..., Any],
+                getattr(urllib3_connection, "_ssl_wrap_socket_and_match_hostname"),
+            )
+            sock_and_verified = ssl_wrap(
                 sock=sock,
                 cert_reqs=self.cert_reqs,
                 ssl_version=self.ssl_version,
@@ -211,7 +216,11 @@ class AvailabilityHTTPSConnection(AvailabilityTimingMixin, HTTPSConnection):
             raise
 
         if http2_probe is not None and target_supports_http2 is None:
-            supports_http2 = sock_and_verified.socket.selected_alpn_protocol() == "h2"
+            selected_alpn_protocol = cast(
+                Callable[[], str | None],
+                getattr(sock_and_verified.socket, "selected_alpn_protocol"),
+            )
+            supports_http2 = selected_alpn_protocol() == "h2"
             http2_probe.set_and_release(
                 host=probe_http2_host,
                 port=probe_http2_port,
@@ -221,11 +230,11 @@ class AvailabilityHTTPSConnection(AvailabilityTimingMixin, HTTPSConnection):
         if self.proxy_is_forwarding:
             self.is_verified = False
         else:
-            self.is_verified = sock_and_verified.is_verified
+            self.is_verified = bool(sock_and_verified.is_verified)
 
         self._has_connected_to_proxy = bool(self.proxy)
         if self._has_connected_to_proxy and self.proxy_is_verified is None:
-            self.proxy_is_verified = sock_and_verified.is_verified
+            self.proxy_is_verified = bool(sock_and_verified.is_verified)
 
 
 class AvailabilityHTTPConnectionPool(HTTPConnectionPool):
@@ -244,23 +253,25 @@ class AvailabilityPoolManager(poolmanager.PoolManager):
     """使用可用性连接类的 PoolManager。"""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """初始化支持可用性计时的连接池管理器。"""
         super().__init__(*args, **kwargs)
-        self.pool_classes_by_scheme = {
+        setattr(self, "pool_classes_by_scheme", {
             "http": AvailabilityHTTPConnectionPool,
             "https": AvailabilityHTTPSConnectionPool,
-        }
+        })
 
 
 class AvailabilityAdapter(HTTPAdapter):
     """给 requests session 注入可用性连接类。"""
 
-    def init_poolmanager(  # type: ignore[override]
+    def init_poolmanager(
         self,
         connections: int,
         maxsize: int,
         block: bool = False,
         **pool_kwargs: Any,
     ) -> None:
+        """创建使用可用性连接池的 PoolManager。"""
         self._pool_connections = connections
         self._pool_maxsize = maxsize
         self._pool_block = block
@@ -272,12 +283,13 @@ class AvailabilityAdapter(HTTPAdapter):
         )
 
     def proxy_manager_for(self, proxy: str, **proxy_kwargs: Any) -> Any:
+        """创建代理连接池并注入可用性连接类型。"""
         manager = super().proxy_manager_for(proxy, **proxy_kwargs)
         if hasattr(manager, "pool_classes_by_scheme"):
-            manager.pool_classes_by_scheme = {
+            setattr(manager, "pool_classes_by_scheme", {
                 "http": AvailabilityHTTPConnectionPool,
                 "https": AvailabilityHTTPSConnectionPool,
-            }
+            })
         return manager
 
 

@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields, is_dataclass
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 
 @dataclass(frozen=True)
@@ -49,27 +49,31 @@ class ScanOptions:
         if is_dataclass(data) and not isinstance(data, type):
             data = asdict(data)
 
-        if not isinstance(data, Mapping):
-            data = {field.name: getattr(data, field.name, None) for field in fields(cls)}
+        if isinstance(data, Mapping):
+            values = cast(Mapping[str, object], data)
+        else:
+            values = {
+                field.name: getattr(data, field.name, None) for field in fields(cls)
+            }
 
         return cls(
-            check_https=bool(data.get("check_https", True)),
-            check_ssl=bool(data.get("check_ssl", True)),
-            check_dns_security=bool(data.get("check_dns_security", True)),
-            check_security_headers=bool(data.get("check_security_headers", True)),
-            check_trace=bool(data.get("check_trace", True)),
-            check_sensitive_paths=bool(data.get("check_sensitive_paths", True)),
-            check_info_leak=bool(data.get("check_info_leak", True)),
-            check_page_scan=bool(data.get("check_page_scan", False)),
-            check_page_mixed_content=bool(data.get("check_page_mixed_content", False)),
-            check_page_forms=bool(data.get("check_page_forms", False)),
-            check_page_cookie_flags=bool(data.get("check_page_cookie_flags", False)),
-            check_page_redirects=bool(data.get("check_page_redirects", False)),
-            check_page_headers=bool(data.get("check_page_headers", False)),
-            check_page_exposed_info=bool(data.get("check_page_exposed_info", False)),
-            check_page_sitecheck=bool(data.get("check_page_sitecheck", False)),
-            page_scan_max_pages=int(data.get("page_scan_max_pages", 10) or 10),
-            page_scan_max_depth=int(data.get("page_scan_max_depth", 2) or 2),
+            check_https=bool(values.get("check_https", True)),
+            check_ssl=bool(values.get("check_ssl", True)),
+            check_dns_security=bool(values.get("check_dns_security", True)),
+            check_security_headers=bool(values.get("check_security_headers", True)),
+            check_trace=bool(values.get("check_trace", True)),
+            check_sensitive_paths=bool(values.get("check_sensitive_paths", True)),
+            check_info_leak=bool(values.get("check_info_leak", True)),
+            check_page_scan=bool(values.get("check_page_scan", False)),
+            check_page_mixed_content=bool(values.get("check_page_mixed_content", False)),
+            check_page_forms=bool(values.get("check_page_forms", False)),
+            check_page_cookie_flags=bool(values.get("check_page_cookie_flags", False)),
+            check_page_redirects=bool(values.get("check_page_redirects", False)),
+            check_page_headers=bool(values.get("check_page_headers", False)),
+            check_page_exposed_info=bool(values.get("check_page_exposed_info", False)),
+            check_page_sitecheck=bool(values.get("check_page_sitecheck", False)),
+            page_scan_max_pages=_option_int(values.get("page_scan_max_pages"), 10),
+            page_scan_max_depth=_option_int(values.get("page_scan_max_depth"), 2),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -104,3 +108,12 @@ class ScanOptions:
             count += 1 + sum(page_flags)
 
         return count
+
+
+def _option_int(value: object, default: int) -> int:
+    """把外部配置中的整数值转换为有效选项。"""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        return int(value) if value else default
+    return default

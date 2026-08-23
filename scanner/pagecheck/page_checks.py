@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import Iterable
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, cast
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -78,7 +78,8 @@ class PageParser:
         if isinstance(value, str):
             return value
         if isinstance(value, Iterable):
-            return " ".join(str(item) for item in value)
+            items = cast(Iterable[object], value)
+            return " ".join(str(item) for item in items)
         return str(value)
 
 
@@ -171,7 +172,7 @@ def detect_exposed_info(body: str) -> Tuple[List[str], str]:
 
 def resolve_links(base_url: str, links: List[str]) -> List[str]:
     """筛选同源 HTTP 链接。"""
-    resolved = []
+    resolved: List[str] = []
     for link in links:
         absolute_link = urljoin(base_url, link)
         if is_same_origin(base_url, absolute_link) and urlparse(absolute_link).scheme in {"http", "https"}:

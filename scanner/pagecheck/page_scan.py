@@ -2,7 +2,7 @@
 
 from collections import deque
 from threading import Event
-from typing import Callable, Deque, Dict, List, Set, Tuple
+from typing import Callable, Deque, Dict, List, Set, Tuple, cast
 from urllib.parse import urljoin
 
 import requests
@@ -78,7 +78,11 @@ def scan_pages(
         check_stop(stop_event)
         update_progress(0, "正在分析 robots.txt 和 sitemap.xml")
         results.sitecheck = scan_sitecheck(session, start_url, stop_event=stop_event)
-        seed_urls = results.sitecheck.get("seed_urls", []) if results.sitecheck else []
+        raw_seed_urls: object = (
+            results.sitecheck.get("seed_urls", []) if results.sitecheck else []
+        )
+        seed_items = cast(list[object], raw_seed_urls) if isinstance(raw_seed_urls, list) else []
+        seed_urls = [url for url in seed_items if isinstance(url, str)]
         queue.extend((url, 0) for url in seed_urls)
         complete_work("站点公开入口分析")
 

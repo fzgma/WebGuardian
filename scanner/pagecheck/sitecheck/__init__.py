@@ -1,5 +1,6 @@
 """robots.txt / sitemap.xml 站点公开入口分析。"""
 
+from threading import Event
 from typing import Any, Dict, List
 from urllib.parse import urljoin
 
@@ -14,7 +15,7 @@ def scan_sitecheck(
     session: requests.Session,
     start_url: str,
     *,
-    stop_event=None,
+    stop_event: Event | None = None,
 ) -> Dict[str, Any]:
     """统一分析 robots.txt 和 sitemap.xml。"""
     check_stop(stop_event)

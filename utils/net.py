@@ -1,6 +1,6 @@
 import ipaddress
 import string
-from typing import Tuple
+from typing import Any, Tuple
 from urllib.parse import urlparse
 import unicodedata
 
@@ -143,7 +143,7 @@ def http_request(
     session: requests.Session,
     method: str,
     url: str,
-    **kwargs,
+    **kwargs: Any,
 ) -> requests.Response:
     """发送 HTTP 请求。"""
     timeout = kwargs.pop("timeout", DEFAULT_TIMEOUT)

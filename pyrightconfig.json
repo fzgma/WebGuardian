@@ -1,0 +1,47 @@
+{
+  "include": ["main.py", "app.py", "scanner", "utils", "ui"],
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "venv",
+    "env",
+    "build",
+    "dist",
+    ".git",
+    ".streamlit",
+    "**/node_modules",
+    "**/.*"
+  ],
+  "typeCheckingMode": "standard",
+  "pythonVersion": "3.14",
+  "venvPath": ".",
+  "venv": ".venv",
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": ["."]
+    }
+  ],
+  "reportOptionalMemberAccess": "warning",
+  "reportOptionalSubscript": "warning",
+  "reportOptionalCall": "warning",
+
+  "reportUnknownParameterType": "warning",
+  "reportUnknownArgumentType": "warning",
+  "reportUnknownVariableType": "warning",
+  "reportUnknownMemberType": "warning",
+  "reportUnknownLambdaType": "warning",
+
+  "reportUnusedImport": "warning",
+  "reportUnusedVariable": "warning",
+  "reportUnnecessaryCast": "warning",
+  "reportUnnecessaryTypeIgnoreComment": "warning",
+
+  "reportPrivateUsage": "none",
+  "reportAttributeAccessIssue": "error",
+  "reportArgumentType": "error",
+  "reportAssignmentType": "error",
+  "reportCallIssue": "error",
+  "reportIndexIssue": "error",
+  "reportReturnType": "error"
+}

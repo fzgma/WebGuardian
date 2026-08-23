@@ -2,6 +2,7 @@
 
 
 import re
+from threading import Event
 from urllib.parse import urljoin, urlparse
 from typing import Any, Dict, List
 
@@ -55,7 +56,7 @@ def scan_crawl_policy(
     session: requests.Session,
     start_url: str,
     *,
-    stop_event=None,
+    stop_event: Event | None = None,
 ) -> Dict[str, Any]:
     """分析 robots.txt 中公开的站点策略和路径暴露。"""
     robots_url = urljoin(start_url, "/robots.txt")

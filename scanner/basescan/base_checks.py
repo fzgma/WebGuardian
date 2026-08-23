@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Mapping
+from threading import Event
 from typing import Any, Dict, List
 from urllib.parse import urlparse
 
@@ -11,7 +12,8 @@ import requests
 
 from utils.control import check_stop
 from utils.net import http_request
-from utils.result_composer import wrap_section_result
+from ui.result.composer import wrap_section_result
+from ui.result.models import ScanContext, SectionResult, SectionStatus
 
 SECURITY_HEADERS = [
     "Content-Security-Policy",
@@ -75,14 +77,14 @@ FRAMEWORK_NAME_RE = re.compile(
 VERSION_NUMBER_RE = re.compile(r"\b\d+(?:\.\d+){1,3}\b")
 
 
-def run_base_checks(context: Any, response: requests.Response) -> dict[str, dict[str, Any]]:
+def run_base_checks(context: ScanContext, response: requests.Response) -> dict[str, SectionResult]:
     """执行基础站点检查并返回各 section。"""
     options = context.scan_options
     session = context.session
     normalized_url = context.normalized_url
     stop_event = context.stop_event
     progress = context.progress
-    checks: dict[str, dict[str, Any]] = {}
+    checks: dict[str, SectionResult] = {}
 
     check_stop(stop_event)
     https_value = check_https(response.url)
@@ -90,7 +92,7 @@ def run_base_checks(context: Any, response: requests.Response) -> dict[str, dict
         "https",
         {"value": https_value},
         enabled=options.check_https,
-        status="ok" if options.check_https else "disabled",
+        status=SectionStatus.OK if options.check_https else SectionStatus.DISABLED,
         summary="最终访问地址使用 HTTPS。" if https_value else "最终访问地址未使用 HTTPS。",
     )
     if options.check_https:
@@ -108,7 +110,7 @@ def run_base_checks(context: Any, response: requests.Response) -> dict[str, dict
                 "coverage": round(coverage * 100),
             },
             enabled=True,
-            status="ok",
+            status=SectionStatus.OK,
             summary="HTTP 安全响应头检测完成。",
         )
         progress.update("正在检测 HTTP 安全头", 1)
@@ -117,7 +119,7 @@ def run_base_checks(context: Any, response: requests.Response) -> dict[str, dict
             "security_headers",
             {"score": None, "missing": [], "coverage": None},
             enabled=False,
-            status="disabled",
+            status=SectionStatus.DISABLED,
             summary="HTTP 安全响应头检测已关闭。",
         )
 
@@ -134,7 +136,7 @@ def run_base_checks(context: Any, response: requests.Response) -> dict[str, dict
                 "header_findings": header_findings,
             },
             enabled=True,
-            status="ok",
+            status=SectionStatus.OK,
             summary="暴露信息检测完成。",
             findings=header_findings + meta_fields,
         )
@@ -150,7 +152,7 @@ def run_base_checks(context: Any, response: requests.Response) -> dict[str, dict
                 "header_findings": [],
             },
             enabled=False,
-            status="disabled",
+            status=SectionStatus.DISABLED,
             summary="暴露信息检测已关闭。",
         )
 
@@ -161,7 +163,7 @@ def run_base_checks(context: Any, response: requests.Response) -> dict[str, dict
             "http_methods",
             method_info,
             enabled=True,
-            status="ok" if not method_info.get("warnings") else "warn",
+            status=SectionStatus.OK if not method_info.get("warnings") else SectionStatus.WARN,
             summary="HTTP 方法检测完成。",
             warnings=method_info.get("warnings", []),
         )
@@ -178,7 +180,7 @@ def run_base_checks(context: Any, response: requests.Response) -> dict[str, dict
                 "warnings": [],
             },
             enabled=False,
-            status="disabled",
+            status=SectionStatus.DISABLED,
             summary="HTTP 方法检测已关闭。",
         )
 
@@ -206,7 +208,7 @@ def run_base_checks(context: Any, response: requests.Response) -> dict[str, dict
             "sensitive_paths",
             {"paths": found_paths},
             enabled=True,
-            status="ok",
+            status=SectionStatus.OK,
             summary="敏感路径检测完成。",
             warnings=path_warnings,
         )
@@ -215,7 +217,7 @@ def run_base_checks(context: Any, response: requests.Response) -> dict[str, dict
             "sensitive_paths",
             {"paths": []},
             enabled=False,
-            status="disabled",
+            status=SectionStatus.DISABLED,
             summary="敏感路径检测已关闭。",
         )
 
@@ -379,7 +381,7 @@ def _detect_http_methods(
     session: requests.Session,
     url: str,
     *,
-    stop_event=None,
+    stop_event: Event | None = None,
 ) -> Dict[str, Any]:
     """检测 HTTP 方法暴露情况。"""
     result: Dict[str, Any] = {

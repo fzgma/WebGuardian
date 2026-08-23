@@ -2,27 +2,30 @@
 
 import ipaddress
 import re
+from threading import Event
 from typing import Any, Dict, List
 
 import dns.exception
 import dns.resolver
 
 from utils.control import check_stop
-from utils.result_composer import wrap_section_result
+from ui.result.composer import wrap_section_result
+from ui.result.models import ScanContext, SectionResult, SectionStatus
+from utils.scan_progress import ScanProgress
 
 
 DNS_RESOLVER_TIMEOUT = 1.0
 DNS_RESOLVER_LIFETIME = 1.5
 
 
-def run_dns_check(context: Any) -> dict[str, Any]:
+def run_dns_check(context: ScanContext) -> SectionResult:
     """执行 DNS 安全检测并返回标准 section。"""
     if not context.scan_options.check_dns_security:
         return wrap_section_result(
             "dns_security",
             _disabled_result(context.host),
             enabled=False,
-            status="disabled",
+            status=SectionStatus.DISABLED,
             summary="DNS 安全检测已关闭。",
         )
 
@@ -38,7 +41,7 @@ def run_dns_check(context: Any) -> dict[str, Any]:
         "dns_security",
         dns_result,
         enabled=True,
-        status=dns_result.get("status", "ok"),
+        status=SectionStatus.from_value(dns_result.get("status", "ok")),
         summary="DNS 安全检测完成。",
         warnings=dns_result.get("warnings", []),
         findings=dns_result.get("findings", []),
@@ -59,7 +62,11 @@ def _disabled_result(host: str = "") -> Dict[str, Any]:
     }
 
 
-def _detect_dns_security(host: str, stop_event=None, progress=None) -> Dict[str, Any]:
+def _detect_dns_security(
+    host: str,
+    stop_event: Event | None = None,
+    progress: ScanProgress | None = None,
+) -> Dict[str, Any]:
     """检测域名的 SPF、DMARC 和 CAA 配置。"""
     result: Dict[str, Any] = {
         "enabled": True,
@@ -223,7 +230,7 @@ def _lookup_txt_records(
     resolver: dns.resolver.Resolver,
     name: str,
     *,
-    stop_event=None,
+    stop_event: Event | None = None,
 ) -> tuple[List[str], List[str]]:
     """查询 TXT 记录。"""
     check_stop(stop_event)
@@ -246,7 +253,7 @@ def _lookup_caa_records(
     resolver: dns.resolver.Resolver,
     name: str,
     *,
-    stop_event=None,
+    stop_event: Event | None = None,
 ) -> tuple[Dict[str, Any] | None, List[str]]:
     """查询 CAA 记录。"""
     check_stop(stop_event)

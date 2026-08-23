@@ -110,12 +110,7 @@ def explain_scan_error(raw_error: str) -> ScanErrorInfo:
             )
 
     if _looks_like_url_validation_message(lowered):
-        return ScanErrorInfo(
-            summary=text,
-            hint="",
-            detail=text,
-            kind="validation",
-        )
+        return ScanErrorInfo(summary=text, hint="", detail=text, kind="validation")
 
     return ScanErrorInfo(
         summary="检测失败",

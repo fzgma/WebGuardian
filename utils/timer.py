@@ -7,6 +7,7 @@ class Timer:
     """简单的单次计时器。"""
 
     def __init__(self) -> None:
+        """从当前时间开始计时。"""
         self._start = perf_counter()
 
     def reset(self) -> None:

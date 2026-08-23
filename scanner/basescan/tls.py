@@ -1,18 +1,18 @@
 """TLS/SSL 证书与配置检测。"""
 
-from __future__ import annotations
-
 import re
 import socket
 import ssl
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from collections.abc import Callable, Sequence
+from typing import Any, Dict, List, cast
 from urllib.parse import urlparse
 
 from cryptography import x509
 
 from utils.control import check_stop
-from utils.result_composer import wrap_section_result
+from ui.result.composer import wrap_section_result
+from ui.result.models import ScanContext, SectionResult, SectionStatus
 
 _TLS_VERSION_SPECS: list[tuple[str, ssl.TLSVersion, str]] = [
     ("TLS 1.0", ssl.TLSVersion.TLSv1, "弱"),
@@ -23,7 +23,7 @@ _TLS_VERSION_SPECS: list[tuple[str, ssl.TLSVersion, str]] = [
 _WEAK_CIPHER_RE = re.compile(r"(?i)\b(?:NULL|EXPORT|RC4|3DES|DES|MD5|IDEA|SEED)\b")
 
 
-def run_tls_check(context: Any, response: Any) -> dict[str, Any]:
+def run_tls_check(context: ScanContext, response: Any) -> SectionResult:
     """执行 TLS 检测并返回标准 section。"""
     options = context.scan_options
     if not options.check_ssl:
@@ -31,7 +31,7 @@ def run_tls_check(context: Any, response: Any) -> dict[str, Any]:
             "tls",
             _disabled_result(),
             enabled=False,
-            status="disabled",
+            status=SectionStatus.DISABLED,
             summary="SSL 检测已关闭。",
         )
 
@@ -42,7 +42,7 @@ def run_tls_check(context: Any, response: Any) -> dict[str, Any]:
         "tls",
         tls_result,
         enabled=True,
-        status="ok" if tls_result.get("ok") else "error",
+        status=SectionStatus.OK if tls_result.get("ok") else SectionStatus.ERROR,
         summary="TLS / SSL 检测完成。",
         warnings=tls_result.get("warnings", []),
     )
@@ -258,18 +258,24 @@ def _perform_verified_handshake(host: str, port: int, *, timeout: float) -> Dict
             chain_verified = True
             chain_length = None
             chain_complete = None
-            if hasattr(tls_sock, "get_verified_chain"):
+            get_verified_chain = getattr(tls_sock, "get_verified_chain", None)
+            get_unverified_chain = getattr(tls_sock, "get_unverified_chain", None)
+            if callable(get_verified_chain):
                 try:
-                    verified_chain = tls_sock.get_verified_chain()
+                    verified_chain = cast(
+                        Callable[[], Sequence[object]], get_verified_chain
+                    )()
                     chain_length = (
                         len(verified_chain) if verified_chain is not None else None
                     )
                     chain_complete = chain_length is not None and chain_length >= 2
                 except Exception:
                     chain_verified = True
-            elif hasattr(tls_sock, "get_unverified_chain"):
+            elif callable(get_unverified_chain):
                 try:
-                    unverified_chain = tls_sock.get_unverified_chain()
+                    unverified_chain = cast(
+                        Callable[[], Sequence[object]], get_unverified_chain
+                    )()
                     chain_length = (
                         len(unverified_chain) if unverified_chain is not None else None
                     )

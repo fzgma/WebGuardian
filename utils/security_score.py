@@ -1,9 +1,9 @@
 """安全评分规则。"""
 
-from typing import Any, Dict, Tuple
+from collections.abc import Mapping
 
 from scanner.options import ScanOptions
-from utils.result_composer import get_section
+from ui.result.models import JsonValue, SectionResult, SectionStatus
 
 _HTTPS_MAX = 10
 _SECURITY_HEADERS_MAX = 30
@@ -20,57 +20,66 @@ _SENSITIVE_PATHS_MAX = 10
 _TLS_MAX = 20
 
 
-def calculate_score(result: Dict[str, Any], options: ScanOptions) -> Tuple[int, str]:
-    """按已启用的站点检查计算归一化评分。
+def calculate_score(
+    checks: Mapping[str, SectionResult], options: ScanOptions
+) -> tuple[int, str]:
+    """按已启用的站点检查计算归一化评分。"""
 
-    页面级扫描是附加风险信息，不计入站点安全总分，避免扫描深度影响基础评分。
-    """
     score = 0
     max_score = 0
 
-    https = get_section(result, "https", {})
-    if options.check_https and https.get("enabled") is True:
+    https = checks.get("https")
+    if options.check_https and https is not None and https.enabled is True:
         max_score += _HTTPS_MAX
-        if https.get("value") is True:
+        if _value(https, "value") is True:
             score += _HTTPS_MAX
 
-    tls = get_section(result, "tls", {})
-    if options.check_ssl and tls.get("enabled") is True:
+    tls = checks.get("tls")
+    if options.check_ssl and tls is not None and tls.enabled is True:
         max_score += _TLS_MAX
         score += _tls_score(tls)
 
-    dns_security = get_section(result, "dns_security", {})
+    dns_security = checks.get("dns_security")
     if (
         options.check_dns_security
-        and dns_security.get("enabled") is True
-        and dns_security.get("status") != "skipped"
+        and dns_security is not None
+        and dns_security.enabled is True
+        and dns_security.status is not SectionStatus.SKIPPED
     ):
         max_score += _DNS_SECURITY_MAX
         score += _dns_security_score(dns_security)
 
-    security_headers = get_section(result, "security_headers", {})
-    if options.check_security_headers and security_headers.get("enabled") is True:
+    security_headers = checks.get("security_headers")
+    if (
+        options.check_security_headers
+        and security_headers is not None
+        and security_headers.enabled is True
+    ):
         max_score += _SECURITY_HEADERS_MAX
-        score += security_headers.get("score", 0) or 0
+        score += _int_value(security_headers, "score")
 
     if options.check_info_leak:
-        info_leak = get_section(result, "info_leak", {})
-        if info_leak.get("enabled") is True:
+        info_leak = checks.get("info_leak")
+        if info_leak is not None and info_leak.enabled is True:
             max_score += 10
-        else:
-            info_leak = {}
         for field, weight in _INFO_LEAK_WEIGHTS.items():
-            score += weight if info_leak.get(field) is False else 0
+            if info_leak is not None and _value(info_leak, field) is False:
+                score += weight
 
-    method_info = get_section(result, "http_methods", {})
-    if options.check_trace and method_info.get("enabled") is True:
+    method_info = checks.get("http_methods")
+    if options.check_trace and method_info is not None and method_info.enabled is True:
         max_score += _HTTP_METHOD_MAX
         score += _http_methods_score(method_info)
 
-    sensitive_paths = get_section(result, "sensitive_paths", {})
-    if options.check_sensitive_paths and sensitive_paths.get("enabled") is True:
+    sensitive_paths = checks.get("sensitive_paths")
+    if (
+        options.check_sensitive_paths
+        and sensitive_paths is not None
+        and sensitive_paths.enabled is True
+    ):
         max_score += _SENSITIVE_PATHS_MAX
-        score += _SENSITIVE_PATHS_MAX if not sensitive_paths.get("paths") else 0
+        if not _list_value(sensitive_paths, "paths"):
+            score += _SENSITIVE_PATHS_MAX
 
     score = round(score / max_score * 100) if max_score else 0
     return score, _security_level(score)
@@ -78,6 +87,7 @@ def calculate_score(result: Dict[str, Any], options: ScanOptions) -> Tuple[int, 
 
 def _security_level(score: int) -> str:
     """返回安全等级。"""
+
     if score >= 85:
         return "A级"
     if score >= 70:
@@ -85,69 +95,88 @@ def _security_level(score: int) -> str:
     return "C级"
 
 
-def _tls_score(tls_info: Dict[str, Any]) -> int:
-    """计算 TLS 配置得分。"""
-    if not tls_info:
-        return 0
-
+def _tls_score(tls_info: SectionResult) -> int:
+    """根据 TLS 证书、协议、套件和证书链计算分项得分。"""
     score = 0
-    ssl_valid = tls_info.get("ssl_valid")
-
-    if ssl_valid:
+    if _value(tls_info, "ssl_valid"):
         score += 8
 
-    days_left = tls_info.get("ssl_days_left")
+    days_left = _value(tls_info, "ssl_days_left")
     if isinstance(days_left, int) and days_left > 7:
         score += 4
 
-    supported_protocols = tls_info.get("supported_protocols", [])
-    weak_protocols = tls_info.get("weak_protocols", [])
-    if supported_protocols and not weak_protocols and all(proto in {"TLS 1.2", "TLS 1.3"} for proto in supported_protocols):
+    supported_protocols = _list_value(tls_info, "supported_protocols")
+    weak_protocols = _list_value(tls_info, "weak_protocols")
+    if supported_protocols and not weak_protocols and all(
+        proto in {"TLS 1.2", "TLS 1.3"} for proto in supported_protocols
+    ):
         score += 4
     elif supported_protocols and not weak_protocols:
         score += 2
 
-    if tls_info.get("cipher_weak") is False:
+    if _value(tls_info, "cipher_weak") is False:
         score += 2
-
-    if tls_info.get("chain_complete") is True or tls_info.get("chain_verified") is True:
+    if _value(tls_info, "chain_complete") is True or _value(
+        tls_info, "chain_verified"
+    ) is True:
         score += 2
-
     return min(score, _TLS_MAX)
 
 
-def _http_methods_score(method_info: Dict[str, Any]) -> int:
-    """按 TRACE 和其他方法暴露分别给分。"""
+def _http_methods_score(method_info: SectionResult) -> int:
+    """根据 TRACE 和其他方法暴露情况计算分项得分。"""
     score = 0
-    if method_info.get("trace_enabled") is False:
+    if _value(method_info, "trace_enabled") is False:
         score += _HTTP_TRACE_MAX
-    if method_info.get("trace_enabled") is False and not method_info.get("exposed_methods"):
+    if _value(method_info, "trace_enabled") is False and not _list_value(
+        method_info, "exposed_methods"
+    ):
         score += _HTTP_EXPOSED_METHODS_MAX
     return min(score, _HTTP_METHOD_MAX)
 
 
-def _dns_security_score(dns_security: Dict[str, Any]) -> int:
-    """计算 DNS 安全检测得分。"""
+def _dns_security_score(dns_security: SectionResult) -> int:
+    """根据 SPF、DMARC 和 CAA 配置计算分项得分。"""
     score = 0
 
-    spf = dns_security.get("spf", {})
-    spf_policy = spf.get("policy")
+    spf_policy = _object_value(dns_security, "spf").get("policy")
     if spf_policy == "strict":
         score += 5
     elif spf_policy == "softfail":
         score += 3
 
-    dmarc = dns_security.get("dmarc", {})
-    dmarc_policy = dmarc.get("policy")
+    dmarc_policy = _object_value(dns_security, "dmarc").get("policy")
     if dmarc_policy == "reject":
         score += 5
     elif dmarc_policy == "quarantine":
         score += 3
 
-    caa = dns_security.get("caa", {})
+    caa = _object_value(dns_security, "caa")
     if caa.get("present") and caa.get("issuers"):
         score += 5
     elif caa.get("present"):
         score += 2
-
     return min(score, _DNS_SECURITY_MAX)
+
+
+def _value(section: SectionResult, key: str) -> JsonValue:
+    """读取 section 中指定键的动态检测值。"""
+    return section.value(key)
+
+
+def _int_value(section: SectionResult, key: str) -> int:
+    """读取 section 中的整数值，类型不匹配时返回零。"""
+    value = _value(section, key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _list_value(section: SectionResult, key: str) -> list[JsonValue]:
+    """读取 section 中的列表值，类型不匹配时返回空列表。"""
+    value = _value(section, key)
+    return value if isinstance(value, list) else []
+
+
+def _object_value(section: SectionResult, key: str) -> dict[str, JsonValue]:
+    """读取 section 中的对象值，类型不匹配时返回空字典。"""
+    value = _value(section, key)
+    return value if isinstance(value, dict) else {}

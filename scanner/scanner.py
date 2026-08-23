@@ -1,6 +1,7 @@
 import socket
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+import threading
+from collections.abc import Callable
+from typing import cast
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
@@ -21,33 +22,18 @@ from utils.net import (
     normalize_url,
     validate_input_url,
 )
-from utils.result_composer import (
+from ui.result.composer import (
     build_target_result,
     compose_scan_error,
     compose_scan_result,
     wrap_section_result,
 )
+from ui.result.models import JsonObject, ScanContext, ScanResult, SectionResult, SectionStatus
 from utils.timer import Timer
 from .options import ScanOptions
 from .pagecheck.page_scan import scan_pages
 from utils.scan_progress import ScanProgress
 from utils.security_score import calculate_score
-
-
-@dataclass
-class ScanContext:
-    """保存一次扫描所需的目标和运行态信息。"""
-
-    input_url: str
-    normalized_url: str
-    parsed: Any
-    host: str
-    resolved_ips: List[str]
-    scan_options: ScanOptions
-    session: requests.Session
-    progress: ScanProgress
-    stop_event: Any = None
-    errors: list[str] = field(default_factory=list)
 
 
 def resolve_host_ips(host: str) -> List[str]:
@@ -70,9 +56,9 @@ def resolve_host_ips(host: str) -> List[str]:
 
 def _create_scan_context(
     url: str,
-    progress_callback=None,
+    progress_callback: Callable[[int, str], None] | None = None,
     options: Dict[str, Any] | ScanOptions | None = None,
-    stop_event=None,
+    stop_event: threading.Event | None = None,
 ) -> ScanContext | str:
     """初始化扫描上下文。"""
     scan_options = (
@@ -140,7 +126,12 @@ def _request_target(
         if connection is not None:
             timings = getattr(connection, "_availability_timings", None)
             if isinstance(timings, dict):
-                availability_timings = dict(timings)
+                raw_timings = cast(dict[object, object], timings)
+                availability_timings = {
+                    str(key): float(value)
+                    for key, value in raw_timings.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                }
 
         # 读取响应体，确保总耗时和响应大小是本次正式请求的真实结果。
         _ = response.content
@@ -156,7 +147,7 @@ def _request_target(
         session.close()
 
 
-def _empty_page_scan_result() -> Dict[str, Any]:
+def _empty_page_scan_result() -> JsonObject:
     """返回未启用页面扫描时的 section 数据。"""
     return {
         "enabled": False,
@@ -180,7 +171,7 @@ def _empty_page_scan_result() -> Dict[str, Any]:
 
 def _run_page_scan(
     context: ScanContext,
-) -> Dict[str, Any] | None:
+) -> JsonObject | None:
     """调用页面级扫描模块。"""
     check_stop(context.stop_event)
     page_scan = scan_pages(
@@ -193,15 +184,15 @@ def _run_page_scan(
         stop_event=context.stop_event,
     )
     context.progress.complete_page_scan(context.scan_options)
-    return page_scan
+    return cast(JsonObject, page_scan)
 
 
 def scan(
     url: str,
-    progress_callback=None,
+    progress_callback: Callable[[int, str], None] | None = None,
     options: Dict[str, Any] | ScanOptions | None = None,
-    stop_event=None,
-) -> Dict[str, Any]:
+    stop_event: threading.Event | None = None,
+) -> ScanResult:
     """按固定顺序编排一次站点安全扫描。"""
     timer = Timer()
     context = _create_scan_context(url, progress_callback, options, stop_event)
@@ -230,13 +221,13 @@ def scan(
         )
 
     check_stop(context.stop_event)
-    checks = run_base_checks(context, response)
+    checks: dict[str, SectionResult] = run_base_checks(context, response)
     checks = {
         "availability": wrap_section_result(
             "availability",
             availability or {},
             enabled=True,
-            status="ok",
+            status=SectionStatus.OK,
             summary="网站可用性观测完成。",
         ),
         **checks,
@@ -246,38 +237,32 @@ def scan(
 
     if context.scan_options.check_page_scan:
         page_scan = _run_page_scan(context)
-        checks["page_scan"] = wrap_section_result(
+        page_scan_model = wrap_section_result(
             "page_scan",
             page_scan,
             enabled=True,
-            status=page_scan.get("status", "ok")
-            if isinstance(page_scan, Mapping)
-            else "ok",
+            status=SectionStatus.OK,
             summary="页面级安全检查完成。",
-            warnings=page_scan.get("warnings", [])
-            if isinstance(page_scan, Mapping)
-            else None,
-            findings=page_scan.get("findings", [])
-            if isinstance(page_scan, Mapping)
-            else None,
         )
+        checks["page_scan"] = page_scan_model
     else:
-        checks["page_scan"] = wrap_section_result(
+        page_scan_model = wrap_section_result(
             "page_scan",
             _empty_page_scan_result(),
             enabled=False,
-            status="disabled",
+            status=SectionStatus.DISABLED,
             summary="页面级安全检查未启用。",
         )
+        checks["page_scan"] = page_scan_model
 
-    score, level = calculate_score({"checks": checks}, context.scan_options)
+    score, level = calculate_score(checks, context.scan_options)
     final_result = compose_scan_result(
         target=target,
         checks=checks,
         score=score,
         level=level,
         elapsed_seconds=round(timer.elapsed_seconds(), 2),
-        page_scan=checks.get("page_scan"),
+        page_scan=page_scan_model,
         errors=context.errors,
         warnings=[],
     )
