@@ -2,6 +2,8 @@
 __pycache__/
 *.py[codz]
 *$py.class
+.coverage
+.pytest_cache/
 
 __pypackages__/
 

@@ -2,6 +2,7 @@ import streamlit as st
 
 from utils.net import validate_input_url
 from runtime import get_scan_runtime, render_scan_runtime, start_scan
+from ui.page_style import configure_page_width
 from ui.scan_config import collect_scan_options, render_scan_config, validate_scan_options
 
 
@@ -10,8 +11,9 @@ def run_app():
 
     st.set_page_config(
         page_title="WebGuardian 网站安全检测工具",
-        layout="centered"
+        layout="wide"
     )
+    configure_page_width()
 
     st.title("WebGuardian 网站安全检测工具")
     st.caption("输入网站地址后开始检测。")
@@ -20,7 +22,6 @@ def run_app():
     render_scan_form()
 
     render_scan_runtime()
-
 
 @st.fragment(run_every=0.5)
 def render_scan_form() -> None:

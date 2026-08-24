@@ -264,7 +264,7 @@ PayloadT = TypeVar("PayloadT")
 class SectionView(Generic[PayloadT]):
     """带有明确展示 payload 的 section。"""
 
-    result: SectionResult
+    result: "SectionResult"
     data: PayloadT
 
     @property
@@ -395,11 +395,12 @@ class SectionResult:
 
 @dataclass(frozen=True)
 class Summary:
-    """扫描摘要和页面扫描概览。"""
+    """扫描摘要、模块耗时和页面扫描概览。"""
 
     score: int | None = None
     level: str = "未知"
     elapsed_seconds: float | None = None
+    module_durations: dict[str, float] = field(default_factory=lambda: {})
     page_scan_summary: PageScanSummaryData = field(
         default_factory=lambda: {
             "enabled": False,
@@ -416,6 +417,7 @@ class Summary:
             "score": self.score,
             "level": self.level,
             "elapsed_seconds": self.elapsed_seconds,
+            "module_durations": dict(self.module_durations),
             "page_scan_summary": dict(self.page_scan_summary),
         })
 
@@ -467,6 +469,7 @@ class OverviewViewModel:
     score: int
     level: str
     elapsed_seconds: float | None
+    module_durations: dict[str, float]
     https: SectionView[bool | None]
     page_scan: PageScanViewData
 
@@ -488,6 +491,7 @@ class ScanViewModel:
                 "score": self.overview.score,
                 "level": self.overview.level,
                 "elapsed_seconds": self.overview.elapsed_seconds,
+                "module_durations": dict(self.overview.module_durations),
                 "https": self.overview.https.result.to_dict(),
                 "page_scan": _page_scan_view_to_dict(self.overview.page_scan),
             },

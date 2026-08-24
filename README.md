@@ -92,6 +92,7 @@ scanner/
   scanner.py               # 主扫描编排和 ScanContext
   basescan/
     __init__.py            # 基础站点扫描入口
+    availability.py        # 单次正式请求的可用性指标采集
     base_checks.py         # HTTPS、安全头、暴露信息、HTTP 方法、敏感路径
     tls.py                 # TLS/SSL 证书与配置检测
     dns.py                 # SPF、DMARC、CAA 检测
@@ -105,10 +106,10 @@ utils/
   net.py                   # 请求会话、URL 校验和地址规范化
   timer.py                 # 扫描耗时统计
 ui/
+  scan_config.py            # 扫描模式、配置控件和配置校验
+  page_style.py             # 页面宽度与居中样式
   result/
     view.py                 # 扫描结果展示
-scanner/basescan/
-  availability.py          # 单次正式请求的可用性指标采集
 runtime/
   scan_progress.py          # 按工作量计算扫描进度
   models.py                # 运行状态和运行时快照
@@ -119,8 +120,7 @@ result_model/
   models.py                # 扫描领域结果模型
   composer.py              # 后端结果包装和合成
   security_score.py        # 安全评分与等级规则
-ui/
-  scan_config.py            # 扫描模式、配置控件和配置校验
+tests/                     # pytest 单元测试
 requirements.txt           # 运行依赖
 ```
 
@@ -132,7 +132,8 @@ requirements.txt           # 运行依赖
 
 项目代码使用了联合类型注解等语法，低于 3.10 的解释器不兼容。
 
-建议使用 ：**Python 3.13**。
+GitHub Actions 已在 **Python 3.10 至 3.14** 运行全部单元测试；Docker 镜像使用
+**Python 3.14**。
 
 ### 2. 创建虚拟环境
 
@@ -169,7 +170,7 @@ py main.py
 streamlit run app.py
 ```
 
-`main.py` 已包含 Streamlit 启动逻辑。也可以用传统方式`streamlit run `启动成功后，终端会显示本地访问地址，默认通常为 `http://localhost:8501`。
+`main.py` 已包含 Streamlit 启动逻辑。也可以直接执行 `streamlit run app.py`；启动成功后，终端会显示本地访问地址，默认通常为 `http://localhost:8501`。
 
 ### 5. 使用 Docker 镜像
 
@@ -188,6 +189,15 @@ docker run --rm -p 8501:8501 ghcr.io/fzgma/webguardian:latest
 
 启动后访问 `http://localhost:8501` 即可。
 
+### 6. 运行测试与 CI
+
+```bash
+python -m pytest tests -v
+```
+
+推送分支以及创建或更新 Pull Request 时，GitHub Actions 会在 Python `3.10`、`3.11`、
+`3.12`、`3.13` 和 `3.14` 上运行全部 pytest 测试。Docker 镜像发布工作流独立于测试工作流，仅在推送 `v*` 标签时构建和发布。
+
 ## 五、使用方式
 
 1. 选择预设扫描模式，或进入自定义模式。
@@ -195,7 +205,7 @@ docker run --rm -p 8501:8501 ghcr.io/fzgma/webguardian:latest
 3. 输入网站地址，例如 `https://example.com`。
 4. 如果使用 Docker 运行，先启动容器，再在浏览器访问容器暴露的地址。
 5. 按 Enter 或点击“开始检测”。
-6. 查看安全评分、基础检测结果、网站可用性、页面级风险、过程提示和原始 JSON 数据，必要时可在检测中停止任务。
+6. 在“概览”“基础检测”“页面风险”和“原始数据”中查看检测结果；原始数据页支持下载 JSON，必要时可在检测中停止任务。
 
 首次启动后的第一次扫描可能因为 Streamlit、Python 依赖和前端组件的冷启动与预热而耗时较长；同一进程后续扫描通常会更快。
 
@@ -210,8 +220,15 @@ docker run --rm -p 8501:8501 ghcr.io/fzgma/webguardian:latest
 
 1. `scanner/scanner.py` 创建一次扫描的 `ScanContext`，保存目标地址、会话、扫描配置、进度和停止信号等运行态信息。
 2. HTTPS、网站可用性、TLS、DNS、安全响应头、HTTP 方法、敏感路径、信息泄露和页面扫描分别生成独立的 section result。
-3. `result_model/composer.py` 统一包装和合成结果，聚合各模块的 `warnings`、`findings` 和错误，并生成评分、等级、耗时和页面扫描摘要。
-4. `ui/result/view.py` 通过 `result_model/composer.py` 将扫描结果转换为展示层模型，再按模块渲染，网站可用性会在基础信息下方折叠展示。
+3. `result_model/composer.py` 统一包装和合成结果，聚合各模块的 `warnings`、`findings` 和错误，并生成评分、等级、总耗时、模块耗时和页面扫描摘要。
+4. `ui/result/view.py` 通过 `result_model/composer.py` 将扫描结果转换为展示层模型，并按“概览”“基础检测”“页面风险”“原始数据”四个 Tab 渲染。
+
+结果页的组织方式如下：
+
+- “概览”显示评分、等级、HTTPS、总耗时、实际执行模块的横向耗时图、目标摘要和可用性指标。模块耗时不包含初始化、评分和结果组装等编排开销，因此不应与总耗时直接相加比较。
+- 检测过程存在错误或警告时，概览顶部会显示数量提示，详细内容位于概览末尾的折叠区；没有消息时不渲染该区域。
+- “基础检测”以并列区域展示 TLS/DNS 与安全头/HTTP 方法，可能较长的敏感路径和暴露信息保持全宽。
+- “页面风险”提供按风险等级筛选的全宽表格；“原始数据”保留 JSON 浏览并支持下载 JSON 文件。
 
 成功扫描结果的顶层结构如下：
 
@@ -219,9 +236,9 @@ docker run --rm -p 8501:8501 ghcr.io/fzgma/webguardian:latest
 {
   "target": {...},    # 输入地址、规范化地址、主机和解析 IP
   "checks": {...},    # 各检测模块的独立结果
-  "summary": {...},   # 评分、等级、耗时和页面扫描摘要
-  "errors": [...],    # 检测过程中的错误和警告
-  "warnings": [...]
+  "summary": {...},   # 评分、等级、总耗时、模块耗时和页面扫描摘要
+  "errors": [...],    # 检测过程中的错误
+  "warnings": [...]   # 检测过程中的警告
 }
 ```
 

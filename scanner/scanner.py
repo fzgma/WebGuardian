@@ -219,10 +219,14 @@ def _run_checks(
     context: ScanContext,
     response: requests.Response,
     availability: Dict[str, Any] | None,
-) -> tuple[dict[str, SectionResult], SectionResult]:
+) -> tuple[dict[str, SectionResult], SectionResult, dict[str, float]]:
     """执行一次扫描所需的各项检测并返回 section 集合。"""
     check_stop(context.stop_event)
+    module_durations: dict[str, float] = {}
+
+    base_check_timer = Timer()
     checks = run_base_checks(context, response)
+    module_durations["基础检测"] = round(base_check_timer.elapsed_seconds(), 4)
     checks = {
         "availability": wrap_section_result(
             "availability",
@@ -233,12 +237,23 @@ def _run_checks(
         ),
         **checks,
     }
-    checks["tls"] = run_tls_check(context, response)
-    checks["dns_security"] = run_dns_check(context)
 
+    tls_timer = Timer()
+    checks["tls"] = run_tls_check(context, response)
+    if context.scan_options.check_ssl:
+        module_durations["TLS/SSL 检测"] = round(tls_timer.elapsed_seconds(), 4)
+
+    dns_timer = Timer()
+    checks["dns_security"] = run_dns_check(context)
+    if context.scan_options.check_dns_security:
+        module_durations["DNS 安全检测"] = round(dns_timer.elapsed_seconds(), 4)
+
+    page_scan_timer = Timer()
     page_scan = _build_page_scan_section(context)
+    if context.scan_options.check_page_scan:
+        module_durations["页面级安全检查"] = round(page_scan_timer.elapsed_seconds(), 4)
     checks["page_scan"] = page_scan
-    return checks, page_scan
+    return checks, page_scan, module_durations
 
 
 def _compose_final_result(
@@ -247,6 +262,7 @@ def _compose_final_result(
     checks: dict[str, SectionResult],
     page_scan: SectionResult,
     timer: Timer,
+    module_durations: dict[str, float],
 ) -> ScanResult:
     """计算评分并组装最终扫描结果。"""
     score, level = calculate_score(checks, context.scan_options)
@@ -256,6 +272,7 @@ def _compose_final_result(
         score=score,
         level=level,
         elapsed_seconds=round(timer.elapsed_seconds(), 2),
+        module_durations=module_durations,
         page_scan=page_scan,
         errors=context.errors,
         warnings=[],
@@ -284,10 +301,12 @@ def scan(
         context.host,
         context.resolved_ips,
     )
+    request_timer = Timer()
     response, error, availability = _request_target(
         context.normalized_url,
         context.progress,
     )
+    request_duration = round(request_timer.elapsed_seconds(), 4)
     if error is not None:
         return compose_scan_error(
             error.get("error", "目标站点请求失败。"),
@@ -299,5 +318,16 @@ def scan(
             round(timer.elapsed_seconds(), 2),
         )
 
-    checks, page_scan = _run_checks(context, response, availability)
-    return _compose_final_result(context, target, checks, page_scan, timer)
+    checks, page_scan, module_durations = _run_checks(context, response, availability)
+    module_durations = {
+        "目标站点请求": request_duration,
+        **module_durations,
+    }
+    return _compose_final_result(
+        context,
+        target,
+        checks,
+        page_scan,
+        timer,
+        module_durations,
+    )

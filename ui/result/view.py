@@ -1,6 +1,7 @@
 import ipaddress
+import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import streamlit as st
@@ -15,6 +16,7 @@ from result_model.models import (
     InfoLeakViewData,
     PageScanViewData,
     ScanResult,
+    SecurityHeadersViewData,
     SectionStatus,
     SectionView,
     SiteCheckViewData,
@@ -39,36 +41,80 @@ def render_scan_result(result: ScanResult) -> None:
     info_leak = sections.info_leak
     page_scan = sections.page_scan
 
-    st.subheader("检测结果概览")
+    overview_tab, basic_tab, page_tab, raw_tab = st.tabs(
+        ["概览", "基础检测", "页面风险", "原始数据"]
+    )
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("安全评分", f"{overview.score}/100")
-    col2.metric("安全等级", overview.level)
-    https_label = _format_https_label(https_check, tls_check)
-    col3.metric("HTTPS", https_label)
-    elapsed_seconds = overview.elapsed_seconds
-    col4.metric("检测耗时", _format_elapsed_seconds(elapsed_seconds))
+    with overview_tab:
+        _render_message_summary(messages.errors, messages.warnings)
+        st.subheader("检测结果概览")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("安全评分", f"{overview.score}/100")
+        col2.metric("安全等级", overview.level)
+        col3.metric("HTTPS", _format_https_label(https_check, tls_check))
+        col4.metric("检测耗时", _format_elapsed_seconds(overview.elapsed_seconds))
+        _render_module_durations(overview.module_durations)
 
-    page_summary = overview.page_scan
-    if page_summary.enabled:
-        risk_counts = page_summary.risk_counts
-        st.caption(
-            f"页面扫描：已检查 {page_summary.pages_scanned} 页，"
-            f"发现 {page_summary.finding_count} 个问题，"
-            f"高 {risk_counts.get('高', 0)} / 中 {risk_counts.get('中', 0)} / 低 {risk_counts.get('低', 0)}，"
-            f"最高风险 {page_summary.highest_risk}"
-        )
+        page_summary = overview.page_scan
+        if page_summary.enabled:
+            risk_counts = page_summary.risk_counts
+            st.caption(
+                f"页面扫描：已检查 {page_summary.pages_scanned} 页，"
+                f"发现 {page_summary.finding_count} 个问题，"
+                f"高 {risk_counts.get('高', 0)} / 中 {risk_counts.get('中', 0)} / 低 {risk_counts.get('低', 0)}，"
+                f"最高风险 {page_summary.highest_risk}"
+            )
 
-    st.divider()
+        st.divider()
+        _render_target_summary(target.url, target.host, target.resolved_ips)
+
+        _render_availability(availability_check)
+        _render_messages(messages.errors, messages.warnings)
+
+    with basic_tab:
+        left_column, right_column = st.columns(2, gap="large")
+        with left_column:
+            _render_tls_check(tls_check)
+            st.divider()
+            _render_dns_security(dns_check)
+        with right_column:
+            _render_security_headers(headers_check)
+            st.divider()
+            _render_http_methods(methods_check)
+
+        st.divider()
+        _render_sensitive_paths(paths_check)
+        st.divider()
+        _render_info_leak(info_leak)
+
+    with page_tab:
+        _render_page_scan(page_scan)
+        st.divider()
+        _render_sitecheck(page_scan.data.sitecheck)
+
+    with raw_tab:
+        _render_raw_result(view_model.raw)
+
+
+def _render_target_summary(url: str, host: str, resolved_ips: list[str]) -> None:
+    """以并列摘要展示目标与网络信息，完整地址列表按需展开。"""
     st.subheader("基础信息")
-    st.write("检测地址：", target.url)
-    st.write("主机名称：", target.host)
-    resolved_ips = target.resolved_ips
-    if resolved_ips:
-        # 摘要只保留一个 IPv4 和一个 IPv6。
+    target_column, network_column = st.columns(2, gap="large")
+    with target_column:
+        st.caption("检测地址")
+        st.write(url)
+        st.caption("主机名称")
+        st.write(host)
+
+    with network_column:
+        st.caption("解析到的 IP")
+        if not resolved_ips:
+            st.write("未记录")
+            return
+
         ipv4, ipv6 = _split_resolved_ips(resolved_ips)
         summary_ips = [ip for ip in (ipv4, ipv6) if ip]
-        st.write("解析到的 IP：", "，".join(summary_ips))
+        st.write("，".join(summary_ips) if summary_ips else "未记录")
         with st.expander("查看完整 IP 列表"):
             ipv4_list, ipv6_list = _group_resolved_ips(resolved_ips)
             if ipv4_list and ipv6_list:
@@ -80,48 +126,43 @@ def render_scan_result(result: ScanResult) -> None:
                     st.caption("IPv6")
                     st.table([{"IP": ip} for ip in ipv6_list])
             else:
-                # 只有一种地址族时，保持单栏列表。
                 st.table([{"IP": ip} for ip in resolved_ips])
 
 
-    _render_availability(availability_check)
-
-    st.divider()
+def _render_tls_check(tls_check: SectionView[TlsViewData]) -> None:
+    """展示适合在并列面板阅读的 TLS 摘要与详情入口。"""
     st.subheader("TLS/SSL 检测")
     if tls_check.enabled is not True:
         st.info("SSL 检测已关闭。")
-    else:
-        ssl_valid = tls_check.data.ssl_valid
-        st.write("SSL 证书有效：", "是" if ssl_valid else "否")
+        return
 
-    if tls_check.data.ssl_valid:
+    ssl_valid = tls_check.data.ssl_valid
+    st.write("SSL 证书有效：", "是" if ssl_valid else "否")
+    if ssl_valid:
         st.write("证书剩余天数：", tls_check.data.ssl_days_left)
-    elif tls_check.data.ssl_valid is False:
+    elif ssl_valid is False:
         st.warning("未检测到有效的 SSL 证书，或证书检测失败。")
-
     _render_tls_details(tls_check)
 
-    st.divider()
-    _render_dns_security(dns_check)
 
-    st.divider()
+def _render_security_headers(headers_check: SectionView[SecurityHeadersViewData]) -> None:
+    """展示适合在并列面板阅读的安全响应头摘要。"""
     st.subheader("HTTP 安全头检测")
     if headers_check.enabled is not True:
         st.info("安全响应头检测已关闭。")
-    else:
-        st.write("安全头得分：", headers_check.data.score)
+        return
 
+    st.write("安全头得分：", headers_check.data.score)
     missing_headers = headers_check.data.missing
     if missing_headers:
         st.warning("存在缺失的安全响应头：")
         st.code("\n".join(missing_headers))
-    elif headers_check.enabled is True:
+    else:
         st.success("未发现缺失的安全响应头。")
 
-    st.divider()
-    _render_http_methods(methods_check)
 
-    st.divider()
+def _render_sensitive_paths(paths_check: SectionView[list[str]]) -> None:
+    """全宽展示可能较长的敏感路径列表。"""
     st.subheader("敏感路径检测")
     sensitive_paths = paths_check.data
     if paths_check.enabled is not True:
@@ -132,7 +173,9 @@ def render_scan_result(result: ScanResult) -> None:
     else:
         st.success("未发现常见敏感路径。")
 
-    st.divider()
+
+def _render_info_leak(info_leak: SectionView[InfoLeakViewData]) -> None:
+    """全宽展示暴露信息摘要与可折叠详情。"""
     st.subheader("暴露信息检测")
     _render_exposure_status(
         info_leak.data.version_exposed,
@@ -153,15 +196,6 @@ def render_scan_result(result: ScanResult) -> None:
         "重点 meta 字段未检测。",
     )
     _render_info_leak_details(info_leak)
-
-    _render_page_scan(page_scan)
-    st.divider()
-    _render_sitecheck(page_scan.data.sitecheck)
-    _render_messages(messages.errors, messages.warnings)
-
-    st.divider()
-    with st.expander("查看原始检测结果"):
-        st.json(view_model.raw)
 
 
 def _render_exposure_status(
@@ -214,6 +248,45 @@ def _render_availability(availability: SectionView[AvailabilityViewData] | None)
         col4, col5 = st.columns(2)
         col4.metric("TTFB", _format_duration_ms(availability.data.ttfb_seconds))
         col5.metric("发送/接收总量", _format_kb(availability.data.total_bytes))
+
+
+def _render_module_durations(module_durations: dict[str, float]) -> None:
+    """展示实际执行的检测模块耗时，不包含扫描前后的编排开销。"""
+    if not module_durations:
+        return
+
+    st.subheader("检测模块耗时")
+    st.caption("仅统计实际执行的检测模块；总耗时还包含初始化、评分和结果组装。")
+    rows: list[dict[str, object]] = [
+        {"检测模块": name, "耗时（秒）": seconds}
+        for name, seconds in module_durations.items()
+    ]
+    st.bar_chart(rows, x="检测模块", y="耗时（秒）", horizontal=True, color="#2A6F97")
+
+
+def _render_message_summary(errors: list[str], warnings: list[str]) -> None:
+    """在概览顶部提示本次结果是否存在错误或警告。"""
+    if not errors and not warnings:
+        return
+
+    message = f"存在 {len(errors)} 项错误和 {len(warnings)} 项警告，检测结果可能不完整。"
+    if errors:
+        st.error(message)
+    else:
+        st.warning(message)
+
+
+def _render_raw_result(raw: Mapping[str, object]) -> None:
+    """展示并导出原始检测 JSON。"""
+    raw_json = json.dumps(raw, ensure_ascii=False, indent=2)
+    st.download_button(
+        "下载 JSON",
+        raw_json,
+        file_name="webguardian-result.json",
+        mime="application/json",
+        width="stretch",
+    )
+    st.json(raw)
 
 
 def _render_http_methods(method_info: SectionView[HttpMethodsViewData] | None) -> None:
@@ -654,20 +727,7 @@ def _render_page_scan(page_scan: SectionView[PageScanViewData] | None) -> None:
 
     findings = page_scan.findings
     if findings:
-        grouped = _group_findings_by_risk(findings)
-        st.caption(f"高 {len(grouped['高'])} 个，中 {len(grouped['中'])} 个，低 {len(grouped['低'])} 个")
-        if grouped["高"]:
-            st.subheader("高风险结果")
-            for idx, finding in enumerate(grouped["高"], start=1):
-                _render_page_finding_item(idx, finding)
-        if grouped["中"]:
-            with st.expander("显示等级为中的结果"):
-                for idx, finding in enumerate(grouped["中"], start=1):
-                    _render_page_finding_item(idx, finding)
-        if grouped["低"]:
-            with st.expander("显示等级为低的结果"):
-                for idx, finding in enumerate(grouped["低"], start=1):
-                    _render_page_finding_item(idx, finding)
+        _render_page_findings_table(findings)
     else:
         st.success("未发现页面级安全问题。")
 
@@ -683,20 +743,49 @@ def _render_page_scan(page_scan: SectionView[PageScanViewData] | None) -> None:
 
 
 def _render_messages(errors: list[str], warnings: list[str]) -> None:
-    """展示聚合后的检测错误和警告。"""
+    """在概览结尾折叠展示聚合后的检测错误和警告。"""
     if not errors and not warnings:
         return
 
     st.divider()
-    st.subheader("检测过程提示")
-    if errors:
-        st.warning("部分检测项执行异常，结果可能不完整：")
-        for error in errors:
-            st.write(f"- {error}")
-    if warnings:
-        st.info("检测过程中产生以下提示：")
-        for warning in warnings:
-            st.write(f"- {warning}")
+    with st.expander(f"检测过程提示（{len(errors) + len(warnings)}）"):
+        if errors:
+            st.warning("部分检测项执行异常，结果可能不完整：")
+            for error in errors:
+                st.write(f"- {error}")
+        if warnings:
+            st.info("检测过程中产生以下提示：")
+            for warning in warnings:
+                st.write(f"- {warning}")
+
+
+def _render_page_findings_table(findings: Sequence[FindingView]) -> None:
+    """按风险筛选并表格展示页面级发现。"""
+    grouped = _group_findings_by_risk(findings)
+    st.caption(f"高 {len(grouped['高'])} 个，中 {len(grouped['中'])} 个，低 {len(grouped['低'])} 个")
+    selected_risk = st.selectbox(
+        "风险等级",
+        ["全部", "高", "中", "低"],
+        key="page_finding_risk_filter",
+    )
+    visible = [
+        finding
+        for finding in findings
+        if selected_risk == "全部" or finding.risk == selected_risk
+    ]
+    risk_order = {"高": 0, "中": 1, "低": 2}
+    visible.sort(key=lambda finding: risk_order.get(finding.risk, 3))
+    rows: list[dict[str, object]] = [
+        {
+            "风险": finding.risk,
+            "类型": finding.type,
+            "页面": finding.url,
+            "说明": finding.message,
+            "建议": finding.suggestion,
+        }
+        for finding in visible
+    ]
+    st.dataframe(rows, width="stretch", hide_index=True, key="page_findings_table")
 
 
 def _render_page_finding_item(idx: int, finding: FindingView) -> None:
