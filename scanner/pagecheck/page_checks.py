@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import Iterable
-from typing import Any, Dict, List, Tuple, cast
+from typing import Any, Dict, List, Tuple, TypedDict, cast
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -85,9 +85,20 @@ class PageParser:
 
 def is_same_origin(base_url: str, candidate_url: str) -> bool:
     """判断两个地址是否同源。"""
-    base = urlparse(base_url)
-    candidate = urlparse(candidate_url)
-    return (base.scheme, base.netloc) == (candidate.scheme, candidate.netloc)
+    def origin(url: str) -> tuple[str, str, int] | None:
+        try:
+            parsed = urlparse(url)
+            scheme = parsed.scheme.lower()
+            host = parsed.hostname
+            if scheme not in {"http", "https"} or not host:
+                return None
+            port = parsed.port
+        except ValueError:
+            return None
+        return scheme, host.lower(), port if port is not None else (443 if scheme == "https" else 80)
+
+    base = origin(base_url)
+    return base is not None and base == origin(candidate_url)
 
 
 def is_same_host(base_url: str, candidate_url: str) -> bool:
@@ -115,19 +126,49 @@ def is_html(content_type: str) -> bool:
     return "text/html" in lowered or "application/xhtml+xml" in lowered
 
 
-def cookie_flag_state(response: requests.Response) -> Dict[str, bool]:
-    """提取 Cookie 安全属性状态。"""
-    flags = {"secure": False, "httponly": False, "samesite": False}
+class CookieSecurityFinding(TypedDict):
+    """单个 Cookie 的属性证据，不保存 Cookie 值。"""
+
+    name: str
+    domain: str
+    path: str
+    missing_flags: list[str]
+
+
+def cookie_security_findings(response: requests.Response) -> list[CookieSecurityFinding]:
+    """逐 Cookie 检查属性，避免不同 Cookie 的属性互相补齐。"""
+    findings: list[CookieSecurityFinding] = []
     for cookie in response.cookies:
-        if cookie.secure:
-            flags["secure"] = True
-        for key in getattr(cookie, "_rest", {}) or {}:
-            lowered = key.lower()
-            if lowered == "httponly":
-                flags["httponly"] = True
-            elif lowered == "samesite":
-                flags["samesite"] = True
-    return flags
+        attributes = {
+            str(key).lower(): value
+            for key, value in (getattr(cookie, "_rest", {}) or {}).items()
+        }
+        raw_same_site = attributes.get("samesite")
+        same_site = raw_same_site.strip().lower() if isinstance(raw_same_site, str) else ""
+        flags = {
+            "Secure": bool(cookie.secure),
+            "HttpOnly": "httponly" in attributes,
+            "SameSite": same_site in {"strict", "lax", "none"},
+        }
+        missing = [name for name, valid in flags.items() if not valid]
+        if missing:
+            findings.append({
+                "name": cookie.name,
+                "domain": cookie.domain or "",
+                "path": cookie.path or "/",
+                "missing_flags": missing,
+            })
+    return findings
+
+
+def cookie_flag_state(response: requests.Response) -> Dict[str, bool]:
+    """兼容原有汇总接口；所有 Cookie 均满足属性时才返回 True。"""
+    missing = {
+        flag.lower()
+        for finding in cookie_security_findings(response)
+        for flag in finding["missing_flags"]
+    }
+    return {flag: flag not in missing for flag in ("secure", "httponly", "samesite")}
 
 
 def extract_redirect_chain(

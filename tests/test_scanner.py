@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 import requests
 
 from result_model.composer import wrap_section_result
-from result_model.models import JsonObject, ScanContext, ScanResult, SectionStatus
+from result_model.models import JsonObject, ScanContext, ScanResult, ScoreReport, SectionStatus
 from runtime.scan_progress import ScanProgress
 from scanner import scanner as scanner_module
 from scanner.basescan import dns as dns_module
@@ -51,7 +51,7 @@ def test_scan_assembles_successful_backend_result() -> None:
         patch.object(scanner_module, "run_base_checks", return_value=base_checks),
         patch.object(scanner_module, "run_tls_check", return_value=tls),
         patch.object(scanner_module, "run_dns_check", return_value=dns),
-        patch.object(scanner_module, "calculate_score", return_value=(88, "A级")),
+        patch.object(scanner_module, "calculate_score_report", return_value=ScoreReport(score=88, level="A级", status="complete")),
     ):
         result = scanner_module.scan("example.com", progress_callback=record_progress)
 
@@ -63,6 +63,7 @@ def test_scan_assembles_successful_backend_result() -> None:
     assert result.checks["availability"].value("total_bytes") == 512
     assert result.summary.score == 88
     assert result.summary.level == "A级"
+    assert result.summary.scoring.score == 88
     assert set(result.summary.module_durations) == {
         "目标站点请求",
         "基础检测",
@@ -152,7 +153,7 @@ def test_request_duration_does_not_include_later_check_durations() -> None:
         patch.object(scanner_module, "run_base_checks", side_effect=base_checks),
         patch.object(scanner_module, "run_tls_check", side_effect=tls_check),
         patch.object(scanner_module, "run_dns_check", side_effect=dns_check),
-        patch.object(scanner_module, "calculate_score", return_value=(100, "A级")),
+        patch.object(scanner_module, "calculate_score_report", return_value=ScoreReport(score=100, level="A级", status="complete")),
     ):
         result = scanner_module.scan("example.com", options=options)
 

@@ -40,7 +40,7 @@ from utils.timer import Timer
 from .options import ScanOptions
 from .pagecheck.page_scan import scan_pages
 from runtime.scan_progress import ScanProgress
-from result_model.security_score import calculate_score
+from result_model.security_score import calculate_score_report
 
 
 def resolve_host_ips(host: str) -> List[str]:
@@ -198,12 +198,19 @@ def _build_page_scan_section(context: ScanContext) -> SectionResult:
     """执行页面扫描并包装为统一 section。"""
     if context.scan_options.check_page_scan:
         page_scan = _run_page_scan(context)
+        assessment = page_scan.get("assessment", "complete") if page_scan else "unknown"
+        if page_scan is not None:
+            page_scan["meta"] = {"assessment": assessment}
+        status = {
+            "complete": SectionStatus.OK, "partial": SectionStatus.WARN,
+            "unknown": SectionStatus.ERROR, "not_applicable": SectionStatus.SKIPPED,
+        }.get(str(assessment), SectionStatus.WARN)
         return wrap_section_result(
             "page_scan",
             page_scan,
             enabled=True,
-            status=SectionStatus.OK,
-            summary="页面级安全检查完成。",
+            status=status,
+            summary="页面级安全检查已结束；完成范围见页面统计。",
         )
 
     return wrap_section_result(
@@ -265,12 +272,13 @@ def _compose_final_result(
     module_durations: dict[str, float],
 ) -> ScanResult:
     """计算评分并组装最终扫描结果。"""
-    score, level = calculate_score(checks, context.scan_options)
+    scoring = calculate_score_report(checks, context.scan_options)
     final_result = compose_scan_result(
         target=target,
         checks=checks,
-        score=score,
-        level=level,
+        score=scoring.score,
+        level=scoring.level,
+        scoring=scoring,
         elapsed_seconds=round(timer.elapsed_seconds(), 2),
         module_durations=module_durations,
         page_scan=page_scan,

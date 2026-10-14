@@ -158,6 +158,7 @@ class SecurityHeadersViewData:
 
     score: int | None = None
     missing: list[str] = field(default_factory=lambda: list[str]())
+    invalid: list[dict[str, str]] = field(default_factory=lambda: list[dict[str, str]]())
 
 
 @dataclass(frozen=True)
@@ -245,6 +246,10 @@ class PageScanViewData:
 
     enabled: bool = False
     pages_scanned: int = 0
+    pages_attempted: int = 0
+    pages_failed: int = 0
+    pages_skipped: int = 0
+    assessment: str = "not_applicable"
     max_pages: int = 0
     max_depth: int = 0
     finding_count: int = 0
@@ -394,11 +399,57 @@ class SectionResult:
 
 
 @dataclass(frozen=True)
+class ScoreItem:
+    """一个基础模块的证据状态和评分依据。"""
+
+    name: str
+    label: str
+    status: str
+    earned: int | None
+    maximum: int
+    reason: str
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "name": self.name, "label": self.label, "status": self.status,
+            "earned": self.earned, "maximum": self.maximum, "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class ScoreReport:
+    """基础评分与本次检查范围；未完成的检查不产生正式评级。"""
+
+    score: int | None = None
+    level: str = "不适用"
+    status: str = "not_applicable"
+    enabled_count: int = 0
+    evaluated_count: int = 0
+    unknown_count: int = 0
+    not_applicable_count: int = 0
+    total_count: int = 7
+    earned_points: int = 0
+    possible_points: int = 0
+    items: list[ScoreItem] = field(default_factory=lambda: list[ScoreItem]())
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "score": self.score, "level": self.level, "status": self.status,
+            "enabled_count": self.enabled_count, "evaluated_count": self.evaluated_count,
+            "unknown_count": self.unknown_count, "not_applicable_count": self.not_applicable_count,
+            "total_count": self.total_count, "earned_points": self.earned_points,
+            "possible_points": self.possible_points,
+            "items": [item.to_dict() for item in self.items],
+        }
+
+
+@dataclass(frozen=True)
 class Summary:
     """扫描摘要、模块耗时和页面扫描概览。"""
 
     score: int | None = None
     level: str = "未知"
+    scoring: ScoreReport = field(default_factory=ScoreReport)
     elapsed_seconds: float | None = None
     module_durations: dict[str, float] = field(default_factory=lambda: {})
     page_scan_summary: PageScanSummaryData = field(
@@ -416,6 +467,7 @@ class Summary:
         return cast(JsonObject, {
             "score": self.score,
             "level": self.level,
+            "scoring": self.scoring.to_dict(),
             "elapsed_seconds": self.elapsed_seconds,
             "module_durations": dict(self.module_durations),
             "page_scan_summary": dict(self.page_scan_summary),
@@ -466,12 +518,13 @@ class ScanResult:
 class OverviewViewModel:
     """结果页顶部概览。"""
 
-    score: int
+    score: int | None
     level: str
     elapsed_seconds: float | None
     module_durations: dict[str, float]
     https: SectionView[bool | None]
     page_scan: PageScanViewData
+    scoring: ScoreReport = field(default_factory=ScoreReport)
 
 
 @dataclass(frozen=True)
@@ -490,6 +543,7 @@ class ScanViewModel:
             "overview": {
                 "score": self.overview.score,
                 "level": self.overview.level,
+                "scoring": self.overview.scoring.to_dict(),
                 "elapsed_seconds": self.overview.elapsed_seconds,
                 "module_durations": dict(self.overview.module_durations),
                 "https": self.overview.https.result.to_dict(),
@@ -537,6 +591,10 @@ def _page_scan_view_to_dict(value: PageScanViewData) -> JsonObject:
     return {
         "enabled": value.enabled,
         "pages_scanned": value.pages_scanned,
+        "pages_attempted": value.pages_attempted,
+        "pages_failed": value.pages_failed,
+        "pages_skipped": value.pages_skipped,
+        "assessment": value.assessment,
         "max_pages": value.max_pages,
         "max_depth": value.max_depth,
         "finding_count": value.finding_count,

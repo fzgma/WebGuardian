@@ -14,17 +14,8 @@ from utils.control import check_stop
 from utils.net import http_request
 from result_model.composer import wrap_section_result
 from result_model.models import ScanContext, SectionResult, SectionStatus
+from .header_rules import SECURITY_HEADERS as SECURITY_HEADERS, assess_security_headers
 
-SECURITY_HEADERS = [
-    "Content-Security-Policy",
-    "Strict-Transport-Security",
-    "X-Frame-Options",
-    "X-Content-Type-Options",
-    "Referrer-Policy",
-    "Permissions-Policy",
-    "Cross-Origin-Opener-Policy",
-    "Cross-Origin-Resource-Policy",
-]
 INFO_LEAK_META_KEYS = {
     "generator",
     "application-name",
@@ -90,7 +81,7 @@ def run_base_checks(context: ScanContext, response: requests.Response) -> dict[s
     https_value = check_https(response.url)
     checks["https"] = wrap_section_result(
         "https",
-        {"value": https_value},
+        {"value": https_value, "meta": {"assessment": "complete"}},
         enabled=options.check_https,
         status=SectionStatus.OK if options.check_https else SectionStatus.DISABLED,
         summary="最终访问地址使用 HTTPS。" if https_value else "最终访问地址未使用 HTTPS。",
@@ -100,24 +91,19 @@ def run_base_checks(context: ScanContext, response: requests.Response) -> dict[s
 
     headers = response.headers
     if options.check_security_headers:
-        missing = [header for header in SECURITY_HEADERS if header not in headers]
-        coverage = (len(SECURITY_HEADERS) - len(missing)) / len(SECURITY_HEADERS)
+        header_result = assess_security_headers(headers)
         checks["security_headers"] = wrap_section_result(
             "security_headers",
-            {
-                "score": round(coverage * 30),
-                "missing": missing,
-                "coverage": round(coverage * 100),
-            },
+            header_result,
             enabled=True,
-            status=SectionStatus.OK,
-            summary="HTTP 安全响应头检测完成。",
+            status=SectionStatus.WARN if header_result["missing"] or header_result["invalid"] else SectionStatus.OK,
+            summary="HTTP 安全响应头的存在性与基础语义检查完成。",
         )
         progress.update("正在检测 HTTP 安全头", 1)
     else:
         checks["security_headers"] = wrap_section_result(
             "security_headers",
-            {"score": None, "missing": [], "coverage": None},
+            {"score": None, "missing": [], "invalid": [], "coverage": None},
             enabled=False,
             status=SectionStatus.DISABLED,
             summary="HTTP 安全响应头检测已关闭。",
@@ -134,6 +120,7 @@ def run_base_checks(context: ScanContext, response: requests.Response) -> dict[s
                 "meta_exposed": bool(meta_fields),
                 "meta_fields": meta_fields,
                 "header_findings": header_findings,
+                "meta": {"assessment": "complete"},
             },
             enabled=True,
             status=SectionStatus.OK,
@@ -163,7 +150,11 @@ def run_base_checks(context: ScanContext, response: requests.Response) -> dict[s
             "http_methods",
             method_info,
             enabled=True,
-            status=SectionStatus.OK if not method_info.get("warnings") else SectionStatus.WARN,
+            status=(
+                SectionStatus.ERROR if method_info["meta"]["assessment"] == "unknown"
+                else SectionStatus.WARN if method_info.get("warnings")
+                else SectionStatus.OK
+            ),
             summary="HTTP 方法检测完成。",
             warnings=method_info.get("warnings", []),
         )
@@ -185,32 +176,18 @@ def run_base_checks(context: ScanContext, response: requests.Response) -> dict[s
         )
 
     if options.check_sensitive_paths:
-        found_paths: list[str] = []
-        path_warnings: list[str] = []
-        parsed_url = urlparse(normalized_url)
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        for path in SENSITIVE_PATHS:
-            check_stop(stop_event)
-            try:
-                path_response = http_request(
-                    session,
-                    "GET",
-                    base_url + path,
-                    allow_redirects=False,
-                )
-                if path_response.status_code in (200, 301, 302, 401, 403):
-                    found_paths.append(path)
-            except Exception as exc:
-                path_warnings.append(f"敏感路径 {path} 检测异常：{exc}")
-            progress.update(f"正在检测敏感路径：{path}", 1)
-
+        path_result = _detect_sensitive_paths(context)
+        assessment = path_result["meta"]["assessment"]
         checks["sensitive_paths"] = wrap_section_result(
             "sensitive_paths",
-            {"paths": found_paths},
+            path_result,
             enabled=True,
-            status=SectionStatus.OK,
-            summary="敏感路径检测完成。",
-            warnings=path_warnings,
+            status=(
+                SectionStatus.ERROR if assessment == "unknown"
+                else SectionStatus.WARN if assessment == "partial" or path_result["paths"]
+                else SectionStatus.OK
+            ),
+            summary="敏感路径响应检查完成；疑似可访问的路径不等于已确认漏洞。",
         )
     else:
         checks["sensitive_paths"] = wrap_section_result(
@@ -222,6 +199,60 @@ def run_base_checks(context: ScanContext, response: requests.Response) -> dict[s
         )
 
     return checks
+
+
+def _detect_sensitive_paths(context: ScanContext) -> dict[str, Any]:
+    """保留每个有限路径探测的证据，区分未发现与未能判断。"""
+    parsed_url = urlparse(context.normalized_url)
+    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    observations: list[dict[str, Any]] = []
+    paths: list[str] = []
+    warnings: list[str] = []
+    failed_count = 0
+    inconclusive_count = 0
+    for path in SENSITIVE_PATHS:
+        check_stop(context.stop_event)
+        observation: dict[str, Any] = {"path": path, "status_code": None}
+        try:
+            response = http_request(context.session, "GET", base_url + path, allow_redirects=False)
+            code = response.status_code
+            observation["status_code"] = code
+            if code in {401, 403}:
+                observation.update(status="protected", reason="访问被拒绝或要求认证，未确认公开暴露。")
+            elif code in {404, 410}:
+                observation.update(status="not_found", reason="服务器返回资源不存在。")
+            elif 300 <= code < 400:
+                observation.update(status="redirect", reason="路径返回跳转，未跟进落地点，不能据此确认暴露。")
+                inconclusive_count += 1
+                warnings.append(f"敏感路径 {path} 返回 HTTP {code} 跳转，未验证跳转后的内容。")
+            elif 200 <= code < 300:
+                observation.update(
+                    status="suspected_exposure",
+                    reason="路径响应成功，疑似可访问；尚未排除 soft-404 或统一登录页，不代表已确认漏洞。",
+                )
+                paths.append(path)
+            else:
+                observation.update(status="error", reason=f"HTTP {code} 无法可靠判断路径是否公开。")
+        except requests.RequestException as exc:
+            observation.update(status="error", reason=f"请求失败：{type(exc).__name__}")
+        if observation["status"] == "error":
+            failed_count += 1
+            inconclusive_count += 1
+            warnings.append(f"敏感路径 {path} 检测未完成：{observation['reason']}")
+        observations.append(observation)
+        context.progress.update(f"正在检测敏感路径：{path}", 1)
+
+    conclusive_count = len(observations) - inconclusive_count
+    assessment = "complete" if not inconclusive_count else "partial" if conclusive_count else "unknown"
+    return {
+        "paths": paths,
+        "checked_count": len(observations) - failed_count,
+        "failed_count": failed_count,
+        "total_count": len(observations),
+        "observations": observations,
+        "warnings": warnings,
+        "meta": {"assessment": assessment},
+    }
 
 
 def check_https(url: str) -> bool:
@@ -391,13 +422,16 @@ def _detect_http_methods(
         "cors_methods": [],
         "exposed_methods": [],
         "trace_enabled": None,
+        "trace_status": None,
+        "trace_evidence": "",
+        "options_assessment": "unknown",
         "warnings": [],
     }
 
     check_stop(stop_event)
     try:
         options_resp = http_request(session, "OPTIONS", url, allow_redirects=False)
-    except Exception as exc:
+    except requests.RequestException as exc:
         result["warnings"].append(f"HTTP 方法 OPTIONS 检测异常：{exc}")
         options_resp = None
 
@@ -410,15 +444,33 @@ def _detect_http_methods(
         result["allow_methods"] = allow_methods
         result["cors_methods"] = cors_methods
         result["exposed_methods"] = _merge_http_methods(allow_methods, cors_methods)
+        if (200 <= options_resp.status_code < 300 or options_resp.status_code == 405) and (allow_methods or cors_methods):
+            result["options_assessment"] = "complete"
+        else:
+            result["warnings"].append("OPTIONS 未提供可用于判断方法声明的有效响应，空列表不表示已禁用其他方法。")
 
     check_stop(stop_event)
     try:
         trace_resp = http_request(session, "TRACE", url, allow_redirects=False)
-        result["trace_enabled"] = trace_resp.status_code < 400
-    except Exception as exc:
+        result["trace_status"] = trace_resp.status_code
+        if trace_resp.status_code in {405, 501}:
+            result["trace_enabled"] = False
+            result["trace_evidence"] = f"服务器以 HTTP {trace_resp.status_code} 明确拒绝 TRACE 方法。"
+        elif 200 <= trace_resp.status_code < 300 and re.match(
+            r"^TRACE\s+\S+\s+HTTP/\d(?:\.\d)?(?:\r?\n|$)",
+            getattr(trace_resp, "text", "") or "",
+        ):
+            result["trace_enabled"] = True
+            result["trace_evidence"] = "成功响应中回显了 TRACE 请求行。"
+        else:
+            result["trace_evidence"] = f"HTTP {trace_resp.status_code} 未提供明确的 TRACE 回显或禁用证据。"
+            result["warnings"].append(result["trace_evidence"])
+    except requests.RequestException as exc:
         result["warnings"].append(f"TRACE 检测异常：{exc}")
         result["trace_enabled"] = None
 
+    known_probes = int(result["options_assessment"] == "complete") + int(result["trace_enabled"] is not None)
+    result["meta"] = {"assessment": "complete" if known_probes == 2 else "partial" if known_probes else "unknown"}
     return result
 
 

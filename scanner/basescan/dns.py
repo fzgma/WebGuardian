@@ -59,6 +59,7 @@ def _disabled_result(host: str = "") -> Dict[str, Any]:
         "caa": {"present": None, "records": [], "issuers": []},
         "findings": [],
         "warnings": [],
+        "meta": {"assessment": "unknown"},
     }
 
 
@@ -82,6 +83,7 @@ def _detect_dns_security(
 
     if not host:
         result["status"] = "skipped"
+        result["meta"] = {"assessment": "not_applicable"}
         result["warnings"].append("DNS 安全检测已跳过：未获取到主机名。")
         return result
 
@@ -91,6 +93,7 @@ def _detect_dns_security(
         pass
     else:
         result["status"] = "skipped"
+        result["meta"] = {"assessment": "not_applicable"}
         result["warnings"].append("DNS 安全检测已跳过：当前输入是 IP 地址。")
         return result
 
@@ -104,6 +107,9 @@ def _detect_dns_security(
     dmarc_records: List[str] = []
     caa_records: Dict[str, Any] | None = None
     had_query_error = False
+    spf_errors: List[str] = []
+    dmarc_errors: List[str] = []
+    caa_errors: List[str] = []
 
     for candidate in lookup_candidates:
         check_stop(stop_event)
@@ -139,12 +145,17 @@ def _detect_dns_security(
             break
 
     result["lookup_domain"] = lookup_domain
-
-    if had_query_error and not (
-        spf_records or dmarc_records or (caa_records and caa_records.get("records"))
-    ):
+    failed_queries = sum(bool(errors) for errors in (spf_errors, dmarc_errors, caa_errors))
+    result["meta"] = {
+        "assessment": "unknown" if failed_queries == 3 else "partial" if had_query_error else "complete",
+    }
+    result["queries_completed"] = 3 - failed_queries
+    result["queries_failed"] = failed_queries
+    if failed_queries == 3:
         result["status"] = "error"
         return result
+    if had_query_error:
+        result["status"] = "warn"
 
     if spf_records:
         result["spf"]["present"] = True
@@ -152,7 +163,7 @@ def _detect_dns_security(
         spf_policy = _classify_spf(spf_records)
         result["spf"]["policy"] = spf_policy["policy"]
         result["findings"].extend(spf_policy["findings"])
-    else:
+    elif not spf_errors:
         result["spf"]["present"] = False
         result["findings"].append(
             {
@@ -169,7 +180,7 @@ def _detect_dns_security(
         dmarc_policy = _classify_dmarc(dmarc_records)
         result["dmarc"]["policy"] = dmarc_policy["policy"]
         result["findings"].extend(dmarc_policy["findings"])
-    else:
+    elif not dmarc_errors:
         result["dmarc"]["present"] = False
         result["findings"].append(
             {
@@ -193,7 +204,7 @@ def _detect_dns_security(
                     "suggestion": "如需收紧证书签发范围，可补充 issue 或 issuewild 约束。",
                 }
             )
-    else:
+    elif not caa_errors:
         result["caa"]["present"] = False
         result["findings"].append(
             {
@@ -204,7 +215,7 @@ def _detect_dns_security(
             }
         )
 
-    if not result["findings"]:
+    if not result["findings"] and not had_query_error:
         result["findings"].append(
             {
                 "risk": "低",

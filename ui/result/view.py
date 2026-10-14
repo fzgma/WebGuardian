@@ -2,9 +2,10 @@ import ipaddress
 import json
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal, Protocol, cast
 
 import streamlit as st
+from streamlit.delta_generator import DeltaGenerator
 
 from result_model.composer import build_result_view_model
 from result_model.models import (
@@ -16,12 +17,43 @@ from result_model.models import (
     InfoLeakViewData,
     PageScanViewData,
     ScanResult,
+    ScoreReport,
     SecurityHeadersViewData,
     SectionStatus,
     SectionView,
     SiteCheckViewData,
     TlsViewData,
 )
+
+
+class _TabularUI(Protocol):
+    """结果页实际使用的表格接口，隔离 Streamlit 可选数据类型中的 Unknown。"""
+
+    def dataframe(
+        self,
+        data: Sequence[Mapping[str, object]],
+        *,
+        width: Literal["stretch"] = "stretch",
+        hide_index: bool | None = None,
+        key: str | None = None,
+    ) -> DeltaGenerator: ...
+
+    def table(self, data: Sequence[Mapping[str, object]]) -> DeltaGenerator: ...
+
+    def bar_chart(
+        self,
+        data: Sequence[Mapping[str, object]],
+        *,
+        x: str,
+        y: str,
+        horizontal: bool,
+        color: str,
+    ) -> DeltaGenerator: ...
+
+
+def _tabular_ui() -> _TabularUI:
+    """为已确认支持的记录列表提供精确签名，保留当前 Streamlit 上下文。"""
+    return cast(_TabularUI, st)
 
 
 def render_scan_result(result: ScanResult) -> None:
@@ -49,17 +81,26 @@ def render_scan_result(result: ScanResult) -> None:
         _render_message_summary(messages.errors, messages.warnings)
         st.subheader("检测结果概览")
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("安全评分", f"{overview.score}/100")
-        col2.metric("安全等级", overview.level)
+        scoring = overview.scoring
+        score_label = (
+            f"{scoring.score}/100"
+            if scoring.score is not None
+            else "不适用" if scoring.status == "not_applicable" else "待完成"
+        )
+        col1.metric("基础配置评分", score_label)
+        col2.metric("本次范围", f"{scoring.enabled_count}/{scoring.total_count} 项")
         col3.metric("HTTPS", _format_https_label(https_check, tls_check))
         col4.metric("检测耗时", _format_elapsed_seconds(overview.elapsed_seconds))
+        _render_score_details(scoring)
         _render_module_durations(overview.module_durations)
 
         page_summary = overview.page_scan
         if page_summary.enabled:
             risk_counts = page_summary.risk_counts
             st.caption(
-                f"页面扫描：已检查 {page_summary.pages_scanned} 页，"
+                f"页面扫描：尝试 {page_summary.pages_attempted} 页，"
+                f"完成 HTML 检查 {page_summary.pages_scanned} 页，"
+                f"失败 {page_summary.pages_failed} 页，跳过 {page_summary.pages_skipped} 页，"
                 f"发现 {page_summary.finding_count} 个问题，"
                 f"高 {risk_counts.get('高', 0)} / 中 {risk_counts.get('中', 0)} / 低 {risk_counts.get('低', 0)}，"
                 f"最高风险 {page_summary.highest_risk}"
@@ -96,6 +137,46 @@ def render_scan_result(result: ScanResult) -> None:
         _render_raw_result(view_model.raw)
 
 
+def _render_score_details(scoring: ScoreReport) -> None:
+    """说明评分适用范围，并保留每项得分的证据状态。"""
+    st.caption(
+        f"已启用 {scoring.enabled_count}/{scoring.total_count} 项基础检查 · "
+        f"已评估 {scoring.evaluated_count} 项 · 未知 {scoring.unknown_count} 项 · "
+        f"不适用 {scoring.not_applicable_count} 项"
+    )
+    st.caption("页面风险独立展示，不直接计入基础配置评分。")
+    if scoring.status in {"partial", "unknown"}:
+        st.warning("已启用的基础检查仍有未知或未完成项，基础配置评分与评级待完成。")
+    elif scoring.status == "not_applicable":
+        st.info("本次没有适用的基础评分项，基础配置评分与评级不适用。")
+    elif scoring.score is not None:
+        st.caption(
+            f"本次范围评级：{scoring.level}；已确认得分 "
+            f"{scoring.earned_points}/{scoring.possible_points}，按本次适用检查范围归一化。"
+        )
+
+    if scoring.items:
+        statuses = {
+            "passed": "已通过", "risk": "发现风险", "partial": "部分完成",
+            "unknown": "未知", "not_applicable": "不适用", "disabled": "已关闭",
+        }
+        with st.expander("查看基础配置评分明细"):
+            _tabular_ui().dataframe(
+                [
+                    {
+                        "检测项": item.label,
+                        "得分": str(item.earned) if item.earned is not None else "—",
+                        "满分": item.maximum,
+                        "状态": statuses.get(item.status, "未知"),
+                        "原因": item.reason,
+                    }
+                    for item in scoring.items
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+
+
 def _render_target_summary(url: str, host: str, resolved_ips: list[str]) -> None:
     """以并列摘要展示目标与网络信息，完整地址列表按需展开。"""
     st.subheader("基础信息")
@@ -121,12 +202,12 @@ def _render_target_summary(url: str, host: str, resolved_ips: list[str]) -> None
                 col_v4, col_v6 = st.columns(2)
                 with col_v4:
                     st.caption("IPv4")
-                    st.table([{"IP": ip} for ip in ipv4_list])
+                    _tabular_ui().table([{"IP": ip} for ip in ipv4_list])
                 with col_v6:
                     st.caption("IPv6")
-                    st.table([{"IP": ip} for ip in ipv6_list])
+                    _tabular_ui().table([{"IP": ip} for ip in ipv6_list])
             else:
-                st.table([{"IP": ip} for ip in resolved_ips])
+                _tabular_ui().table([{"IP": ip} for ip in resolved_ips])
 
 
 def _render_tls_check(tls_check: SectionView[TlsViewData]) -> None:
@@ -135,13 +216,18 @@ def _render_tls_check(tls_check: SectionView[TlsViewData]) -> None:
     if tls_check.enabled is not True:
         st.info("SSL 检测已关闭。")
         return
+    if tls_check.result.meta.get("assessment") == "not_applicable":
+        st.info("TLS/SSL 检测不适用：最终访问地址未使用 HTTPS。")
+        return
 
     ssl_valid = tls_check.data.ssl_valid
-    st.write("SSL 证书有效：", "是" if ssl_valid else "否")
+    st.write("SSL 证书有效：", "是" if ssl_valid is True else "否" if ssl_valid is False else "未知")
     if ssl_valid:
         st.write("证书剩余天数：", tls_check.data.ssl_days_left)
     elif ssl_valid is False:
         st.warning("未检测到有效的 SSL 证书，或证书检测失败。")
+    else:
+        st.info("尚未取得有效的证书检测结论，请查看检测提示。")
     _render_tls_details(tls_check)
 
 
@@ -152,13 +238,27 @@ def _render_security_headers(headers_check: SectionView[SecurityHeadersViewData]
         st.info("安全响应头检测已关闭。")
         return
 
-    st.write("安全头得分：", headers_check.data.score)
+    st.write("安全头得分：", headers_check.data.score if headers_check.data.score is not None else "待完成")
     missing_headers = headers_check.data.missing
+    invalid_headers = headers_check.data.invalid
     if missing_headers:
         st.warning("存在缺失的安全响应头：")
         st.code("\n".join(missing_headers))
-    else:
-        st.success("未发现缺失的安全响应头。")
+    if invalid_headers:
+        st.warning("以下安全响应头的值未通过基础校验：")
+        _tabular_ui().dataframe(
+            [
+                {"响应头": item.get("header", ""), "当前值": item.get("value", ""), "原因": item.get("reason", "")}
+                for item in invalid_headers
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+    if not missing_headers and not invalid_headers:
+        if headers_check.data.score is not None and headers_check.result.meta.get("assessment") == "complete":
+            st.success("本次安全响应头基础校验未发现缺失或无效配置。")
+        else:
+            st.info("尚未取得完整的安全响应头检测结论。")
 
 
 def _render_sensitive_paths(paths_check: SectionView[list[str]]) -> None:
@@ -167,11 +267,46 @@ def _render_sensitive_paths(paths_check: SectionView[list[str]]) -> None:
     sensitive_paths = paths_check.data
     if paths_check.enabled is not True:
         st.info("敏感路径检测已关闭。")
-    elif sensitive_paths:
+        return
+    assessment = paths_check.result.meta.get("assessment", "unknown")
+    if sensitive_paths:
         st.warning("发现可能存在的敏感路径：")
         st.code("\n".join(sensitive_paths))
-    else:
-        st.success("未发现常见敏感路径。")
+    if assessment == "complete" and not sensitive_paths:
+        st.success("本次内置路径检查已完成，未发现敏感路径命中。")
+    elif assessment in {"unknown", "partial"}:
+        st.warning("敏感路径检测尚未完成，未命中不代表路径不存在。")
+    elif assessment == "not_applicable":
+        st.info("本次敏感路径检测不适用。")
+    checked = paths_check.result.value("checked_count")
+    failed = paths_check.result.value("failed_count")
+    total = paths_check.result.value("total_count")
+    if checked is not None or failed is not None or total is not None:
+        st.caption(f"路径检查：已响应 {checked if checked is not None else '未知'} / {total if total is not None else '未知'}，失败 {failed if failed is not None else '未知'}")
+    observations = paths_check.result.value("observations")
+    if isinstance(observations, list) and observations:
+        statuses = {
+            "suspected_exposure": "疑似暴露", "exposed": "疑似暴露",
+            "protected": "访问受限", "redirect": "重定向待确认",
+            "not_found": "未发现", "error": "请求失败",
+        }
+        with st.expander("查看敏感路径响应记录"):
+            _tabular_ui().dataframe(
+                [
+                    {
+                        "路径": item.get("path", ""),
+                        "状态": statuses.get(str(item.get("status", "")), "未知"),
+                        "响应码": str(item.get("status_code") or "未知"),
+                        "原因": item.get("reason", ""),
+                        "跳转目标": item.get("location", ""),
+                    }
+                    for item in observations if isinstance(item, dict)
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+    for warning in paths_check.warnings:
+        st.info(warning)
 
 
 def _render_info_leak(info_leak: SectionView[InfoLeakViewData]) -> None:
@@ -213,7 +348,7 @@ def _render_exposure_status(
 def _format_https_label(https_check: SectionView[bool | None], tls_check: SectionView[TlsViewData]) -> str:
     """根据 HTTPS 或 TLS 结果显示概览中的 HTTPS 状态。"""
     if https_check.enabled is True:
-        return "是" if https_check.data is True else "否"
+        return "是" if https_check.data is True else "否" if https_check.data is False else "未知"
 
     if tls_check.enabled is True:
         ssl_valid = tls_check.data.ssl_valid
@@ -261,7 +396,7 @@ def _render_module_durations(module_durations: dict[str, float]) -> None:
         {"检测模块": name, "耗时（秒）": seconds}
         for name, seconds in module_durations.items()
     ]
-    st.bar_chart(rows, x="检测模块", y="耗时（秒）", horizontal=True, color="#2A6F97")
+    _tabular_ui().bar_chart(rows, x="检测模块", y="耗时（秒）", horizontal=True, color="#2A6F97")
 
 
 def _render_message_summary(errors: list[str], warnings: list[str]) -> None:
@@ -314,7 +449,7 @@ def _render_http_methods(method_info: SectionView[HttpMethodsViewData] | None) -
             st.warning(f"同时发现可能暴露的其他 HTTP 方法：{', '.join(exposed_methods)}")
     elif exposed_methods:
         st.warning(f"发现可能暴露的 HTTP 方法：{', '.join(exposed_methods)}")
-    elif method_info.data.trace_enabled is False:
+    elif method_info.data.trace_enabled is False and method_info.result.meta.get("assessment") == "complete":
         st.success("未发现明显的 HTTP 方法暴露。")
     else:
         st.info("HTTP 方法检测结果不完整。")
@@ -350,8 +485,10 @@ def _render_dns_security(dns_security: SectionView[DnsViewData] | None) -> None:
     findings = dns_security.findings
     if findings:
         _render_ranked_findings("DNS 安全检测问题", findings)
-    elif status is not SectionStatus.ERROR:
+    elif dns_security.result.meta.get("assessment") == "complete":
         st.success("未发现明显的 DNS 安全问题。")
+    else:
+        st.info("DNS 安全检测结论尚不完整，暂无发现不能视为配置通过。")
 
     for warning in dns_security.warnings:
         st.info(warning)
@@ -602,7 +739,7 @@ def _render_ranked_findings(
 ) -> None:
     """按风险等级展示发现。"""
     if not findings:
-        st.success(f"未发现明显的 {section_label}。")
+        st.info(f"暂无 {section_label} 发现记录。")
         return
 
     grouped = _group_findings_by_risk(findings)
@@ -711,7 +848,9 @@ def _render_page_scan(page_scan: SectionView[PageScanViewData] | None) -> None:
         return
 
     st.write(
-        f"已扫描 {page_scan.data.pages_scanned} / {page_scan.data.max_pages} 页，"
+        f"尝试 {page_scan.data.pages_attempted} / {page_scan.data.max_pages} 页，"
+        f"完成 HTML 检查 {page_scan.data.pages_scanned} 页，"
+        f"失败 {page_scan.data.pages_failed} 页，跳过 {page_scan.data.pages_skipped} 页，"
         f"最大深度 {page_scan.data.max_depth}，"
         f"发现问题 {page_scan.data.finding_count} 个，"
         f"高 {page_scan.data.risk_counts.get('高', 0)} / "
@@ -728,8 +867,12 @@ def _render_page_scan(page_scan: SectionView[PageScanViewData] | None) -> None:
     findings = page_scan.findings
     if findings:
         _render_page_findings_table(findings)
+    elif page_scan.data.assessment == "complete" and page_scan.data.pages_scanned > 0:
+        st.success("本次已完成检查的 HTML 页面中未发现页面级安全问题。")
     else:
-        st.success("未发现页面级安全问题。")
+        st.info("页面检查未形成完整结论，暂无发现不能视为页面安全。")
+    if page_scan.data.assessment in {"partial", "unknown"}:
+        st.warning("页面检测结果不完整，请结合失败、跳过数量和检测提示查看。")
 
     redirect_issues = page_scan.data.redirect_issues
     if redirect_issues:
@@ -785,7 +928,7 @@ def _render_page_findings_table(findings: Sequence[FindingView]) -> None:
         }
         for finding in visible
     ]
-    st.dataframe(rows, width="stretch", hide_index=True, key="page_findings_table")
+    _tabular_ui().dataframe(rows, width="stretch", hide_index=True, key="page_findings_table")
 
 
 def _render_page_finding_item(idx: int, finding: FindingView) -> None:

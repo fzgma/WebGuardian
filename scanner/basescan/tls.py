@@ -38,12 +38,17 @@ def run_tls_check(context: ScanContext, response: Any) -> SectionResult:
     check_stop(context.stop_event)
     tls_result = inspect_tls_configuration(response.url)
     context.progress.update("正在检测 SSL 证书", 1)
+    assessment = tls_result.get("meta", {}).get("assessment")
+    status = {
+        "complete": SectionStatus.OK, "partial": SectionStatus.WARN,
+        "unknown": SectionStatus.ERROR, "not_applicable": SectionStatus.SKIPPED,
+    }.get(assessment, SectionStatus.OK if tls_result.get("ok") else SectionStatus.ERROR)
     return wrap_section_result(
         "tls",
         tls_result,
         enabled=True,
-        status=SectionStatus.OK if tls_result.get("ok") else SectionStatus.ERROR,
-        summary="TLS / SSL 检测完成。",
+        status=status,
+        summary="最终访问地址未使用 HTTPS，TLS 检查不适用。" if assessment == "not_applicable" else "TLS / SSL 检测已结束。",
         warnings=tls_result.get("warnings", []),
     )
 
@@ -52,7 +57,9 @@ def inspect_tls_configuration(url: str, timeout: float = 5.0) -> Dict[str, Any]:
     """检查 TLS 证书、协议、套件和链信息。"""
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname:
-        return _empty_result()
+        result = _empty_result()
+        result["meta"] = {"assessment": "not_applicable"}
+        return result
 
     host = parsed.hostname
     port = parsed.port or 443
@@ -73,7 +80,8 @@ def inspect_tls_configuration(url: str, timeout: float = 5.0) -> Dict[str, Any]:
         handshake = _perform_verified_handshake(host, port, timeout=timeout)
     except Exception as exc:
         result["ok"] = False
-        result["ssl_valid"] = False
+        result["ssl_valid"] = False if isinstance(exc, ssl.SSLCertVerificationError) else None
+        result["meta"] = {"assessment": "partial" if result["ssl_valid"] is False else "unknown"}
         result["warnings"].append(f"TLS 握手失败：{exc}")
         return result
 
@@ -105,6 +113,10 @@ def inspect_tls_configuration(url: str, timeout: float = 5.0) -> Dict[str, Any]:
         "not_after": _format_dt(expiry),
         "serial_number": format(cert.serial_number, "x"),
     }
+    uncertain_probes = [item["label"] for item in protocol_probes if item.get("assessment") == "unknown"]
+    result["meta"] = {"assessment": "partial" if uncertain_probes else "complete"}
+    if uncertain_probes:
+        result["warnings"].append("以下协议探测未取得可靠结论：" + "、".join(uncertain_probes))
     result["supported_protocols_label"] = (
         "，".join(result["supported_protocols"])
         if result["supported_protocols"]
@@ -150,13 +162,13 @@ def _empty_result(host: str = "", port: int = 443) -> Dict[str, Any]:
     """返回空的 TLS 结果结构。"""
     return {
         "ok": False,
-        "ssl_valid": False,
-        "ssl_days_left": -1,
+        "ssl_valid": None,
+        "ssl_days_left": None,
         "host": host,
         "port": port,
         "protocol": "",
         "cipher": {},
-        "cipher_weak": False,
+        "cipher_weak": None,
         "supported_protocols": [],
         "supported_protocols_label": "",
         "weak_protocols": [],
@@ -166,6 +178,7 @@ def _empty_result(host: str = "", port: int = 443) -> Dict[str, Any]:
         "chain_complete": None,
         "certificate": {},
         "warnings": [],
+        "meta": {"assessment": "unknown"},
     }
 
 
@@ -224,6 +237,7 @@ def _probe_tls_versions(host: str, port: int, *, timeout: float) -> list[Dict[st
     for label, version, risk in _TLS_VERSION_SPECS:
         supported = False
         error = ""
+        assessment = "complete"
         try:
             context = _make_context(verify=False, version=version)
             with socket.create_connection((host, port), timeout=timeout) as sock:
@@ -233,12 +247,15 @@ def _probe_tls_versions(host: str, port: int, *, timeout: float) -> list[Dict[st
                         supported = True
         except Exception as exc:
             error = str(exc)
+            # 只有明确的协议版本拒绝才能证明不支持；本地密码策略、超时等均为未知。
+            assessment = "complete" if isinstance(exc, ssl.SSLError) and getattr(exc, "reason", "") == "TLSV1_ALERT_PROTOCOL_VERSION" else "unknown"
         probes.append(
             {
                 "label": label,
                 "supported": supported,
                 "risk": risk if supported else "",
                 "error": error,
+                "assessment": assessment,
             }
         )
     return probes

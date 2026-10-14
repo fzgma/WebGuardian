@@ -70,3 +70,32 @@ def test_dns_check_returns_disabled_section_without_lookup() -> None:
     assert result.enabled is False
     assert result.status is SectionStatus.DISABLED
     assert result.value("domain") == "example.com"
+
+
+def test_query_failure_is_unknown_not_missing_record() -> None:
+    with (
+        patch.object(dns, "_lookup_txt_records", side_effect=[
+            ([], ["SPF timeout"]), (["v=DMARC1; p=reject"], []),
+        ]),
+        patch.object(dns, "_lookup_caa_records", return_value=(None, [])),
+    ):
+        result = dns._detect_dns_security("example.com")
+    assert result["spf"]["present"] is None
+    assert result["dmarc"]["present"] is True
+    assert result["caa"]["present"] is False
+    assert result["status"] == "warn"
+    assert result["meta"]["assessment"] == "partial"
+    assert result["queries_failed"] == 1
+    assert not any(item.get("type") == "SPF 缺失" for item in result["findings"])
+
+
+def test_all_dns_queries_fail_without_producing_missing_findings() -> None:
+    with (
+        patch.object(dns, "_lookup_txt_records", return_value=([], ["timeout"])),
+        patch.object(dns, "_lookup_caa_records", return_value=(None, ["timeout"])),
+    ):
+        result = dns._detect_dns_security("example.com")
+    assert result["meta"]["assessment"] == "unknown"
+    assert result["status"] == "error"
+    assert result["queries_completed"] == 0
+    assert result["findings"] == []

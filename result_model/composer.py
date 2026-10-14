@@ -24,6 +24,7 @@ from .models import (
     ResultSections,
     ScanResult,
     ScanViewModel,
+    ScoreReport,
     SectionView,
     SectionResult,
     SectionStatus,
@@ -99,12 +100,13 @@ def build_result_view_model(result: ScanResult) -> ScanViewModel:
     sections = _build_result_sections(result)
     return ScanViewModel(
         overview=OverviewViewModel(
-            score=result.summary.score if result.summary.score is not None else 0,
+            score=result.summary.score,
             level=result.summary.level,
             elapsed_seconds=result.summary.elapsed_seconds,
             module_durations=dict(result.summary.module_durations),
             https=sections.https,
             page_scan=sections.page_scan.data,
+            scoring=result.summary.scoring,
         ),
         target=result.target,
         sections=sections,
@@ -205,9 +207,15 @@ def _dns_record_data(value: JsonValue) -> DnsRecordViewData:
 
 def _security_headers_data(section: SectionResult) -> SecurityHeadersViewData:
     """转换安全响应头 section。"""
+    invalid = section.value("invalid")
     return SecurityHeadersViewData(
         score=_int_value(section.value("score")),
         missing=_text_list_value(section.value("missing")),
+        invalid=[
+            {key: _text_value(item.get(key)) for key in ("header", "value", "reason")}
+            for item in invalid
+            if isinstance(item, dict)
+        ] if isinstance(invalid, list) else [],
     )
 
 
@@ -238,6 +246,10 @@ def _page_scan_data(section: SectionResult) -> PageScanViewData:
     return PageScanViewData(
         enabled=section.enabled is True,
         pages_scanned=_int_value(section.value("pages_scanned"), 0) or 0,
+        pages_attempted=_int_value(section.value("pages_attempted"), _int_value(section.value("pages_scanned"), 0)) or 0,
+        pages_failed=_int_value(section.value("pages_failed"), 0) or 0,
+        pages_skipped=_int_value(section.value("pages_skipped"), 0) or 0,
+        assessment=_text_value(section.value("assessment"), "not_applicable"),
         max_pages=_int_value(section.value("max_pages"), 0) or 0,
         max_depth=_int_value(section.value("max_depth"), 0) or 0,
         finding_count=_int_value(section.value("finding_count"), 0) or 0,
@@ -387,7 +399,7 @@ def summarize_page_scan(page_scan: SectionResult | None) -> PageScanSummaryData:
 
     risk_counts = _as_int_mapping(page_scan.value("risk_counts"))
     return {
-        "enabled": _as_bool(page_scan.value("enabled"), False),
+        "enabled": page_scan.enabled is True,
         "pages_scanned": _as_int(page_scan.value("pages_scanned"), 0),
         "finding_count": _as_int(page_scan.value("finding_count"), 0),
         "risk_counts": risk_counts or {"低": 0, "中": 0, "高": 0},
@@ -399,13 +411,14 @@ def compose_scan_result(
     *,
     target: TargetResult,
     checks: Mapping[str, SectionResult],
-    score: int,
+    score: int | None,
     level: str,
     elapsed_seconds: float,
     module_durations: Mapping[str, float] | None = None,
     page_scan: SectionResult | None = None,
     errors: Iterable[str] | None = None,
     warnings: Iterable[str] | None = None,
+    scoring: ScoreReport | None = None,
 ) -> ScanResult:
     """合成最终的大结果。"""
 
@@ -420,6 +433,7 @@ def compose_scan_result(
         summary=Summary(
             score=score,
             level=level,
+            scoring=scoring or ScoreReport(),
             elapsed_seconds=elapsed_seconds,
             module_durations=dict(module_durations or {}),
             page_scan_summary=summarize_page_scan(page_scan),

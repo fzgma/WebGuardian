@@ -1,6 +1,7 @@
 """TLS 检测结果包装测试。"""
 
 from types import SimpleNamespace
+import ssl
 from unittest.mock import patch
 from urllib.parse import urlparse
 
@@ -65,3 +66,38 @@ def test_tls_check_returns_disabled_section_without_network_inspection() -> None
     assert result.enabled is False
     assert result.status is SectionStatus.DISABLED
     assert result.value("ssl_valid") is None
+
+
+def test_http_target_makes_tls_not_applicable() -> None:
+    result = tls.run_tls_check(_context(ScanOptions()), SimpleNamespace(url="http://example.com"))
+    assert result.status is SectionStatus.SKIPPED
+    assert result.meta["assessment"] == "not_applicable"
+    assert result.value("ssl_valid") is None
+
+
+def test_handshake_timeout_does_not_claim_invalid_certificate() -> None:
+    with (
+        patch.object(tls, "_probe_tls_versions", return_value=[]),
+        patch.object(tls, "_perform_verified_handshake", side_effect=TimeoutError("timeout")),
+    ):
+        result = tls.inspect_tls_configuration("https://example.com")
+    assert result["ssl_valid"] is None
+    assert result["cipher_weak"] is None
+    assert result["meta"]["assessment"] == "unknown"
+
+
+def test_certificate_rejection_preserves_known_failure_but_marks_incomplete() -> None:
+    with (
+        patch.object(tls, "_probe_tls_versions", return_value=[]),
+        patch.object(tls, "_perform_verified_handshake", side_effect=ssl.SSLCertVerificationError("expired")),
+    ):
+        result = tls.inspect_tls_configuration("https://example.com")
+    assert result["ssl_valid"] is False
+    assert result["meta"]["assessment"] == "partial"
+
+
+def test_local_tls_probe_error_is_not_proof_of_unsupported_protocol() -> None:
+    with patch.object(tls, "_make_context", side_effect=ssl.SSLError("no ciphers available")):
+        probes = tls._probe_tls_versions("example.com", 443, timeout=1)
+    assert probes
+    assert all(probe["assessment"] == "unknown" for probe in probes)
