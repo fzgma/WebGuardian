@@ -140,7 +140,7 @@ requirements.txt           # 运行依赖
 
 项目代码使用了联合类型注解等语法，低于 3.10 的解释器不兼容。
 
-GitHub Actions 已在 **Python 3.10 至 3.14** 运行全部单元测试；Docker 镜像使用
+GitHub Actions 已在 **Python 3.10 至 3.15** 运行全部单元测试；Docker 镜像使用
 **Python 3.14**。
 
 ### 2. 创建虚拟环境

@@ -1,0 +1,276 @@
+name: Windows ARM64 原生测试
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Windows ARM64 原生测试 / Python 3.11-3.15
+    runs-on: windows-11-arm
+    timeout-minutes: 360
+
+    env:
+      VCPKG_ROOT: 'C:\vcpkg'
+      ARROW_VERSION: '26.0.0'
+
+      # uv 缓存由 actions/cache 手动管理
+      UV_CACHE_DIR: ${{ github.workspace }}\.cache\uv
+
+      # vcpkg 编译后二进制的缓存目录
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.cache\vcpkg-binary-cache
+
+      # 原生 ARM64 Release 依赖的安装路径
+      ARROW_HOME: 'C:\vcpkg\installed\arm64-windows-release'
+      CMAKE_PREFIX_PATH: 'C:\vcpkg\installed\arm64-windows-release'
+      Arrow_DIR: 'C:\vcpkg\installed\arm64-windows-release\share\arrow'
+      OPENSSL_DIR: 'C:\vcpkg\installed\arm64-windows-release'
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 创建缓存目录
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path `
+            $env:UV_CACHE_DIR, `
+            $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+
+      # 获取运行器镜像版本，避免不同工具链环境错误共用缓存
+      - name: 获取运行器镜像版本
+        id: image
+        shell: pwsh
+        run: |
+          $version = $env:ImageVersion
+
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "unknown"
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      # 根据 vcpkg 仓库提交区分不同版本的依赖构建缓存
+      - name: 获取 vcpkg 版本
+        id: vcpkg
+        shell: pwsh
+        run: |
+          $revision = git -C "$env:VCPKG_ROOT" rev-parse HEAD
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "无法获取 vcpkg 版本。"
+          }
+
+          "revision=$revision" >> $env:GITHUB_OUTPUT
+
+      # 恢复之前编译的 ARM64 Release C++ 依赖
+      - name: 恢复 vcpkg 二进制缓存
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/vcpkg-binary-cache
+          key: windows-arm64-vcpkg-release-${{ steps.image.outputs.version }}-${{ steps.vcpkg.outputs.revision }}-arrow26-${{ hashFiles('requirements.txt', '.github/vcpkg-triplets/arm64-windows-release.cmake') }}-v1
+          restore-keys: |
+            windows-arm64-vcpkg-release-
+
+      # uv 缓存只使用这一套手动缓存机制
+      - name: 恢复 uv 缓存
+        id: uv-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/uv
+          key: windows-arm64-uv-${{ steps.image.outputs.version }}-arrow26-${{ hashFiles('requirements.txt') }}-py311-315-v1
+          restore-keys: |
+            windows-arm64-uv-
+
+      # 复用之前下载的 Rust crates，减少重复下载
+      - name: 恢复 Cargo 缓存
+        id: cargo-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: windows-arm64-cargo-${{ steps.image.outputs.version }}-${{ hashFiles('requirements.txt') }}-v1
+          restore-keys: |
+            windows-arm64-cargo-
+
+      # 禁用 setup-uv 自带的缓存，避免和上面的手动缓存重复
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+
+      - name: 检查原生 ARM64 编译工具链
+        shell: pwsh
+        run: |
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+
+          Write-Host "操作系统架构：$arch"
+
+          if ($arch -ne "Arm64") {
+            throw "预期使用原生 ARM64 运行器，实际架构为 $arch。"
+          }
+
+          cmake --version
+          ninja --version
+          rustc -vV
+          cargo --version
+          & "$env:VCPKG_ROOT\vcpkg.exe" version
+
+      # 编译并运行一个 ARM64 C++ 程序，验证编译器和执行环境
+      - name: 编译并运行原生 C++ 测试程序
+        shell: pwsh
+        run: |
+          $src = Join-Path $env:RUNNER_TEMP "arm64-smoke-src"
+          $build = Join-Path $env:RUNNER_TEMP "arm64-smoke-build"
+
+          New-Item -ItemType Directory -Force -Path $src | Out-Null
+
+          @'
+          cmake_minimum_required(VERSION 3.21)
+          project(native_arm64_smoke LANGUAGES CXX)
+          add_executable(native_arm64_smoke main.cpp)
+          '@ | Set-Content -Encoding ascii "$src\CMakeLists.txt"
+
+          @'
+          #include <iostream>
+
+          int main() {
+              std::cout << "Native ARM64 C++ compile and execution OK\n";
+              return 0;
+          }
+          '@ | Set-Content -Encoding ascii "$src\main.cpp"
+
+          cmake -S $src -B $build -A ARM64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          cmake --build $build --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & "$build\Release\native_arm64_smoke.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # 只编译原生 ARM64 Release 版本的 Arrow C++ 和 OpenSSL
+      - name: 编译 C++ 依赖（仅 Release）
+        shell: pwsh
+        run: |
+          $triplet = "arm64-windows-release"
+          $overlay = "$env:GITHUB_WORKSPACE\.github\vcpkg-triplets"
+
+          & "$env:VCPKG_ROOT\vcpkg.exe" install `
+            "arrow[acero,compute,csv,dataset,filesystem,json,orc,parquet]" `
+            openssl `
+            --triplet $triplet `
+            --overlay-triplets $overlay
+
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $prefix = "$env:VCPKG_ROOT\installed\$triplet"
+
+          if (!(Test-Path "$prefix\share\arrow\ArrowConfig.cmake")) {
+            throw "找不到 ArrowConfig.cmake，Arrow 安装可能不完整。"
+          }
+
+          if (!(Test-Path "$prefix\include\openssl\opensslv.h")) {
+            throw "找不到 OpenSSL 头文件。"
+          }
+
+          # 将原生 ARM64 动态库目录加入后续步骤的 PATH
+          Add-Content -Path $env:GITHUB_PATH -Value "$prefix\bin"
+
+          # 为 Python 原生扩展提供 C++ 库和头文件位置
+          Add-Content -Path $env:GITHUB_ENV -Value "ARROW_HOME=$prefix"
+          Add-Content -Path $env:GITHUB_ENV -Value "Arrow_DIR=$prefix\share\arrow"
+          Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_PREFIX_PATH=$prefix"
+          Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_DIR=$prefix"
+
+      # 安装原生 Windows ARM64 Python
+      - name: 安装原生 ARM64 Python 版本
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          uv python install 3.11 3.12 3.13 3.14 3.15
+
+          uv run --no-project --python 3.12 -- python -c \
+            "import platform; print(platform.python_version(), platform.machine()); assert platform.machine().lower() in ('arm64', 'aarch64')"
+
+      # 逐个 Python 版本安装依赖、验证原生扩展并运行测试
+      - name: 构建 Python 原生依赖并运行测试
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          versions=(3.11 3.12 3.13 3.14 3.15)
+          failures=0
+
+          for version in "${versions[@]}"; do
+            echo "::group::原生 ARM64 / Python $version"
+
+            if uv run \
+              --no-project \
+              --python "$version" \
+              --with-requirements requirements.txt \
+              --with pytest \
+              --with "pyarrow==$ARROW_VERSION" \
+              -- python -c '
+          import platform
+          import pyarrow
+          import cryptography
+          import pytest
+
+          machine = platform.machine().lower()
+          print("Python 架构：", machine)
+
+          assert machine in ("arm64", "aarch64"), (
+              f"不是原生 ARM64 Python：{machine}"
+          )
+
+          print("PyArrow 版本：", pyarrow.__version__)
+          print("cryptography 版本：", cryptography.__version__)
+
+          raise SystemExit(pytest.main(["tests", "-v"]))
+          '; then
+              echo "Python $version：通过"
+            else
+              status=$?
+              echo "Python $version：失败（退出码 $status）"
+              failures=$((failures + 1))
+            fi
+
+            echo "::endgroup::"
+          done
+
+          if (( failures > 0 )); then
+            echo "::error::有 $failures 个 Python 版本测试失败。"
+            exit 1
+          fi
+
+      # 即使测试失败，也尽可能保存已编译的 C++ 依赖
+      - name: 保存 vcpkg 二进制缓存
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/vcpkg-binary-cache
+          key: windows-arm64-vcpkg-release-${{ steps.image.outputs.version }}-${{ steps.vcpkg.outputs.revision }}-arrow26-${{ hashFiles('requirements.txt', '.github/vcpkg-triplets/arm64-windows-release.cmake') }}-v1
+
+      # 仅由 actions/cache 保存 uv 缓存
+      - name: 保存 uv 缓存
+        if: always() && steps.uv-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/uv
+          key: windows-arm64-uv-${{ steps.image.outputs.version }}-arrow26-${{ hashFiles('requirements.txt') }}-py311-315-v1
+
+      # 保存 Rust 依赖下载缓存
+      - name: 保存 Cargo 缓存
+        if: always() && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: windows-arm64-cargo-${{ steps.image.outputs.version }}-${{ hashFiles('requirements.txt') }}-v1
